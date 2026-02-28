@@ -27,20 +27,18 @@ Passively scores web pages for AI-generated text and images using a non-intrusiv
 ## Quick Start — 10 Commands
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/your-team/ai-content-shield.git && cd ai-content-shield
-
+# 1. Clone the repo (if not already done)
 # 2. Install frontend dependencies
-cd frontend-extension && npm install
+cd frontend-extension; npm install
 
 # 3. Build the extension
 npm run build
 
 # 4. Install backend dependencies
-cd ../backend && npm install
+cd ../backend; npm install
 
-# 5. Configure environment
-cp .env.example .env   # then edit .env with your API keys
+# 5. Configure environment (Windows PowerShell)
+cp .env.example .env
 
 # 6. Start the backend
 npm run dev

@@ -57,7 +57,9 @@ export interface ExtensionMessage {
     | "GET_RESULT" // popup/panel → background: get cached result
     | "UPDATE_SETTINGS" // popup → background: settings changed
     | "BLUR_CONTENT" // background → content script: apply/remove blur
-    | "INJECT_DOTS"; // background → content script: Google search dots
+    | "INJECT_DOTS" // background → content script: Google search dots
+    | "OPEN_SIDE_PANEL" // badge → background: open side panel
+    | "EXTRACT_CONTENT_TRIGGER"; // background → content script: trigger fresh extraction
   payload?: any;
 }
 
