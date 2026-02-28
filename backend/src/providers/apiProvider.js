@@ -163,7 +163,12 @@ async function callHuggingFace(text) {
     };
   } catch (err) {
     console.error("[apiProvider] HuggingFace error:", err.message);
-    throw err;
+    return {
+      score: 0,
+      provider: "huggingface",
+      error: "API timeout or error",
+      details: { error: err.message },
+    };
   }
 }
 

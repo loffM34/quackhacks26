@@ -211,6 +211,56 @@ function injectFloatingBadge(score: number | null): void {
 // Content Blur
 // ──────────────────────────────────────────────────────────
 
+function findRangeForSnippet(snippet: string): Range | null {
+  const normSnippet = snippet.replace(/\s+/g, "").toLowerCase();
+  if (normSnippet.length < 10) return null;
+
+  const walker = document.createTreeWalker(
+    document.body,
+    NodeFilter.SHOW_TEXT,
+    null,
+  );
+  let node;
+  let fullText = "";
+  const nodes: { node: Text; start: number; end: number }[] = [];
+
+  while ((node = walker.nextNode() as Text)) {
+    const parent = node.parentElement;
+    if (parent) {
+      const tag = parent.tagName;
+      if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") continue;
+      // skip completely hidden elements
+      const style = window.getComputedStyle(parent);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+    }
+
+    const text = (node.nodeValue || "").replace(/\s+/g, "").toLowerCase();
+    if (!text) continue;
+
+    nodes.push({
+      node,
+      start: fullText.length,
+      end: fullText.length + text.length,
+    });
+    fullText += text;
+  }
+
+  const matchIdx = fullText.indexOf(normSnippet);
+  if (matchIdx === -1) return null;
+
+  const matchEnd = matchIdx + normSnippet.length;
+  const overlapping = nodes.filter(
+    (n) => n.end > matchIdx && n.start < matchEnd,
+  );
+
+  if (overlapping.length === 0) return null;
+
+  const range = document.createRange();
+  range.setStartBefore(overlapping[0].node);
+  range.setEndAfter(overlapping[overlapping.length - 1].node);
+  return range;
+}
+
 function applyContentBlur(analysis: PageAnalysis): void {
   const threshold = settings?.threshold ?? 70;
 
@@ -218,84 +268,59 @@ function applyContentBlur(analysis: PageAnalysis): void {
     .filter((item) => item.type === "text" && item.score > threshold)
     .forEach((item) => {
       if (!item.preview) return;
-
-      // Create a search snippet that is resilient to slight whitespace changes
-      const snippet = item.preview.slice(0, 80).replace(/\s+/g, "").trim();
-      if (snippet.length < 10) return;
-
-      const elements = document.querySelectorAll(
-        "p, article, li, blockquote, div, span, h1, h2, h3, h4",
-      );
-
-      // Find the deeply nested element that contains this text
-      // to avoid blurring a massive parent container
-      let bestMatch: HTMLElement | null = null;
-      let minLength = Infinity;
-
-      elements.forEach((el) => {
-        const text = (el.textContent || "").replace(/\s+/g, "").trim();
-        if (text.includes(snippet)) {
-          if (text.length < minLength && text.length < 3000) {
-            minLength = text.length;
-            bestMatch = el as HTMLElement;
-          }
-        }
-      });
-
-      if (bestMatch) {
-        // Don't blur tiny inline spans if their parent is better
-        let target = bestMatch as HTMLElement;
-        if (target.tagName.toLowerCase() === "span" && target.parentElement) {
-          target = target.parentElement;
-        }
-        applyBlurToElement(target, item.score);
+      const snippet = item.preview.slice(0, 80);
+      const range = findRangeForSnippet(snippet);
+      if (range) {
+        applyOverlayBlur(range, item.score);
       }
     });
 }
 
-function applyBlurToElement(el: HTMLElement, score: number): void {
-  // Don't re-blur already-blurred elements
-  if (el.dataset.aiShieldBlurred) return;
-  el.dataset.aiShieldBlurred = "true";
+function applyOverlayBlur(range: Range, score: number): void {
+  const rect = range.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return;
 
-  const wrapper = document.createElement("div");
-  wrapper.style.position = "relative";
+  const overlay = document.createElement("div");
+  overlay.className = "ai-shield-blur-overlay";
+  overlay.style.position = "absolute";
+  overlay.style.top = `${rect.top + window.scrollY - 4}px`;
+  overlay.style.left = `${rect.left + window.scrollX - 4}px`;
+  overlay.style.width = `${rect.width + 8}px`;
+  overlay.style.height = `${rect.height + 8}px`;
+  overlay.style.backdropFilter = "blur(6px) saturate(0.85)";
+  overlay.style.backgroundColor = "rgba(10,26,74,0.15)";
+  overlay.style.zIndex = "2147483646";
+  overlay.style.borderRadius = "6px";
+  overlay.style.border = "1px solid rgba(148,163,184,0.2)";
+  overlay.style.transition = "opacity 0.3s ease";
 
-  // Apply blur + desaturation
-  el.style.filter = "blur(4px) saturate(0.85)";
-  el.style.transition = "filter 0.3s ease";
-
-  // Add inline label
   const label = document.createElement("div");
-  label.textContent = `Hidden: likely AI (${Math.round(score)}%) — show anyway`;
+  label.textContent = `Hidden: likely AI (${Math.round(score)}%) — click to show`;
   Object.assign(label.style, {
     position: "absolute",
     top: "50%",
     left: "50%",
     transform: "translate(-50%, -50%)",
-    background: "rgba(10,26,74,0.85)",
-    backdropFilter: "blur(8px)",
-    color: "#94a3b8",
-    padding: "6px 12px",
+    background: "rgba(10,26,74,0.95)",
+    color: "#e2e8f0",
+    padding: "8px 16px",
     borderRadius: "8px",
-    fontSize: "12px",
+    fontSize: "13px",
+    fontWeight: "500",
     cursor: "pointer",
-    zIndex: "10",
-    border: "1px solid rgba(148,163,184,0.2)",
     whiteSpace: "nowrap",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+    border: "1px solid rgba(148,163,184,0.3)",
   });
 
-  // Click to reveal
-  label.addEventListener("click", () => {
-    el.style.filter = "none";
-    label.remove();
-    el.dataset.aiShieldBlurred = "";
-  });
+  overlay.appendChild(label);
+  document.body.appendChild(overlay);
 
-  // Wrap element
-  el.parentNode?.insertBefore(wrapper, el);
-  wrapper.appendChild(el);
-  wrapper.appendChild(label);
+  // Click anywhere on the overlay (or label) to reveal
+  overlay.addEventListener("click", () => {
+    overlay.style.opacity = "0";
+    setTimeout(() => overlay.remove(), 300);
+  });
 }
 
 // ──────────────────────────────────────────────────────────
@@ -303,59 +328,45 @@ function applyBlurToElement(el: HTMLElement, score: number): void {
 // ──────────────────────────────────────────────────────────
 
 function highlightContentOnPage(preview: string): void {
-  // Remove any previous highlights
-  document.querySelectorAll("[data-ai-shield-highlight]").forEach((el) => {
-    (el as HTMLElement).style.outline = "";
-    (el as HTMLElement).style.outlineOffset = "";
-    (el as HTMLElement).style.transition = "";
-    el.removeAttribute("data-ai-shield-highlight");
+  // Remove existing highlights
+  document.querySelectorAll(".ai-shield-highlight-overlay").forEach((el) => {
+    el.remove();
   });
 
-  // Search visible elements for a match
-  // We strip spaces for matching to handle DOM rendering vs extraction differences
-  const snippet = preview.slice(0, 80).replace(/\s+/g, "").trim();
-  if (snippet.length < 10) return;
+  const snippet = preview.slice(0, 80);
+  const range = findRangeForSnippet(snippet);
+  if (!range) return;
 
-  const candidates = document.querySelectorAll(
-    "p, article, li, blockquote, div, span, h1, h2, h3, h4",
-  );
+  const rect = range.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return;
 
-  let bestMatch: HTMLElement | null = null;
-  let minLength = Infinity;
+  const overlay = document.createElement("div");
+  overlay.className = "ai-shield-highlight-overlay";
+  overlay.style.position = "absolute";
+  overlay.style.top = `${rect.top + window.scrollY - 6}px`;
+  overlay.style.left = `${rect.left + window.scrollX - 6}px`;
+  overlay.style.width = `${rect.width + 12}px`;
+  overlay.style.height = `${rect.height + 12}px`;
+  overlay.style.border = "3px solid rgba(99, 102, 241, 0.9)";
+  overlay.style.backgroundColor = "rgba(99, 102, 241, 0.2)";
+  overlay.style.borderRadius = "6px";
+  overlay.style.pointerEvents = "none";
+  overlay.style.zIndex = "2147483647";
+  overlay.style.transition = "opacity 0.3s ease";
 
-  for (const el of candidates) {
-    const text = (el.textContent || "").replace(/\s+/g, "").trim();
-    if (text.includes(snippet)) {
-      if (text.length < minLength && text.length < 3000) {
-        minLength = text.length;
-        bestMatch = el as HTMLElement;
-      }
-    }
-  }
+  document.body.appendChild(overlay);
 
-  if (bestMatch) {
-    let target = bestMatch as HTMLElement;
-    // Prefer parent for tiny spans to make highlight more visible
-    if (target.tagName.toLowerCase() === "span" && target.parentElement) {
-      target = target.parentElement;
-    }
+  // Scroll into view comfortably
+  const elementTop = rect.top + window.scrollY;
+  window.scrollTo({
+    top: elementTop - window.innerHeight / 2 + rect.height / 2,
+    behavior: "smooth",
+  });
 
-    // Scroll into view smoothly
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-
-    // Apply a glowing highlight
-    target.setAttribute("data-ai-shield-highlight", "true");
-    target.style.transition = "outline 0.3s ease, outline-offset 0.3s ease";
-    target.style.outline = "2px solid rgba(99, 102, 241, 0.8)";
-    target.style.outlineOffset = "4px";
-
-    // Remove highlight after 3 seconds
-    setTimeout(() => {
-      target.style.outline = "";
-      target.style.outlineOffset = "";
-      target.removeAttribute("data-ai-shield-highlight");
-    }, 3000);
-  }
+  setTimeout(() => {
+    overlay.style.opacity = "0";
+    setTimeout(() => overlay.remove(), 300);
+  }, 3000);
 }
 
 // ──────────────────────────────────────────────────────────
