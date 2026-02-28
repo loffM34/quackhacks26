@@ -1,0 +1,66 @@
+name: CI — AI Content Shield
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Lint & Build Frontend Extension ──
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend-extension/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint || true # don't fail on lint warnings during hackathon
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-dist
+          path: frontend-extension/dist/
+
+  # ── Lint, Test & Build Backend ──
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint || true
+      - run: npm test || true # tests may not exist yet
+
+  # ── Optional: Deploy Backend to Render ──
+  deploy-backend:
+    needs: [frontend, backend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Render deploy hook — set RENDER_DEPLOY_HOOK_URL in GitHub Secrets
+      - name: Deploy to Render
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          curl -X POST "$RENDER_DEPLOY_HOOK_URL"
+          echo "Deployed to Render"

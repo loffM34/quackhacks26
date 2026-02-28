@@ -1,0 +1,247 @@
+/* ──────────────────────────────────────────────────────────
+   Liquid Glass — Dark-Blue Glassmorphism Design System
+   AI Content Shield
+   ────────────────────────────────────────────────────────── */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── CSS Variables for Liquid Glass theme ── */
+:root {
+  /* Core glass colors */
+  --glass-bg: rgba(10, 26, 74, 0.8);
+  --glass-bg-light: rgba(44, 79, 153, 0.6);
+  --glass-border: rgba(148, 163, 184, 0.2);
+  --glass-border-hover: rgba(148, 163, 184, 0.35);
+  --glass-glow: rgba(62, 105, 171, 0.25);
+  --glass-text: #e2e8f0;
+  --glass-text-muted: #94a3b8;
+  --glass-text-dim: #64748b;
+
+  /* Blur values */
+  --glass-blur: 16px;
+  --glass-blur-heavy: 24px;
+
+  /* Score colors */
+  --score-safe: #22c55e;
+  --score-caution: #eab308;
+  --score-danger: #ef4444;
+
+  /* Spacing */
+  --panel-padding: 16px;
+  --panel-radius: 16px;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+}
+
+/* ── Elder Mode overrides ── */
+.elder-mode {
+  font-size: 18px !important;
+  line-height: 1.6 !important;
+}
+.elder-mode * {
+  font-size: inherit !important;
+}
+.elder-mode .text-xs {
+  font-size: 14px !important;
+}
+.elder-mode .text-sm {
+  font-size: 16px !important;
+}
+.elder-mode button {
+  min-height: 44px !important;
+  padding: 10px 16px !important;
+}
+
+/* ── Base styles ── */
+body {
+  margin: 0;
+  padding: 0;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  background: linear-gradient(180deg, #060e24, #0a1a4a);
+  color: var(--glass-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Glass panel component ── */
+@layer components {
+  .glass-panel {
+    background: linear-gradient(135deg, var(--glass-bg), var(--glass-bg-light));
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: var(--panel-radius);
+    box-shadow:
+      0 4px 16px rgba(10, 26, 74, 0.4),
+      inset 0 1px 1px rgba(148, 163, 184, 0.15);
+  }
+
+  .glass-panel-hover:hover {
+    border-color: var(--glass-border-hover);
+    box-shadow:
+      0 6px 24px rgba(10, 26, 74, 0.5),
+      inset 0 1px 1px rgba(148, 163, 184, 0.2),
+      0 0 20px 2px var(--glass-glow);
+  }
+
+  /* Glass button */
+  .glass-btn {
+    @apply px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200;
+    background: linear-gradient(
+      135deg,
+      rgba(62, 105, 171, 0.4),
+      rgba(44, 79, 153, 0.3)
+    );
+    border: 1px solid var(--glass-border);
+    color: var(--glass-text);
+    cursor: pointer;
+  }
+  .glass-btn:hover {
+    background: linear-gradient(
+      135deg,
+      rgba(62, 105, 171, 0.6),
+      rgba(44, 79, 153, 0.5)
+    );
+    border-color: var(--glass-border-hover);
+    box-shadow: 0 0 12px var(--glass-glow);
+  }
+  .glass-btn:active {
+    transform: scale(0.97);
+  }
+
+  /* Glass input/slider */
+  .glass-input {
+    @apply w-full rounded-lg px-3 py-2 text-sm;
+    background: rgba(10, 26, 74, 0.5);
+    border: 1px solid var(--glass-border);
+    color: var(--glass-text);
+    outline: none;
+  }
+  .glass-input:focus {
+    border-color: var(--glass-border-hover);
+    box-shadow: 0 0 8px var(--glass-glow);
+  }
+
+  /* Score indicator pill */
+  .score-pill {
+    @apply inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold;
+    backdrop-filter: blur(8px);
+  }
+  .score-pill.safe {
+    background: rgba(34, 197, 94, 0.15);
+    color: var(--score-safe);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+  }
+  .score-pill.caution {
+    background: rgba(234, 179, 8, 0.15);
+    color: var(--score-caution);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+  }
+  .score-pill.danger {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--score-danger);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
+  /* Progress bar */
+  .glass-progress {
+    @apply w-full h-2 rounded-full overflow-hidden;
+    background: rgba(10, 26, 74, 0.5);
+  }
+  .glass-progress-bar {
+    @apply h-full rounded-full transition-all duration-500;
+  }
+
+  /* Divider */
+  .glass-divider {
+    @apply w-full my-3;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--glass-border),
+      transparent
+    );
+  }
+}
+
+/* ── Slider custom styling ── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(10, 26, 74, 0.5);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3e69ab, #5b7fb8);
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  cursor: pointer;
+  box-shadow: 0 0 8px var(--glass-glow);
+}
+
+/* ── Toggle switch ── */
+.toggle-switch {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full cursor-pointer transition-colors duration-200;
+  background: rgba(10, 26, 74, 0.5);
+  border: 1px solid var(--glass-border);
+}
+.toggle-switch.active {
+  background: rgba(62, 105, 171, 0.5);
+  border-color: rgba(62, 105, 171, 0.6);
+}
+.toggle-switch .toggle-dot {
+  @apply inline-block h-4 w-4 rounded-full transition-transform duration-200;
+  background: var(--glass-text);
+  transform: translateX(2px);
+}
+.toggle-switch.active .toggle-dot {
+  transform: translateX(22px);
+}
+
+/* ── Animations ── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
