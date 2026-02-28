@@ -141,7 +141,7 @@ async function callHuggingFace(text) {
 
   try {
     const response = await axios.post(
-      `https://api-inference.huggingface.co/models/${model}`,
+      `https://router.huggingface.co/hf-inference/models/${model}`,
       { inputs: text.slice(0, 1024) }, // model input limit
       {
         headers: {
@@ -214,7 +214,7 @@ async function callHuggingFaceImage(imageData) {
 
   try {
     const response = await axios.post(
-      `https://api-inference.huggingface.co/models/${model}`,
+      `https://router.huggingface.co/hf-inference/models/${model}`,
       buffer,
       {
         headers: {
