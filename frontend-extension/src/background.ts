@@ -262,56 +262,50 @@ async function handleUpdateSettings(
 // ──────────────────────────────────────────────────────────
 
 /**
- * Send text paragraphs to the backend for AI detection scoring.
- * Batches all paragraphs in a single request for efficiency.
+ * Send each paragraph to the backend individually for per-paragraph scoring.
+ * This gives accurate per-paragraph scores instead of one blended score.
  */
 async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
   if (paragraphs.length === 0) return [];
 
-  try {
-    // Send combined text (join paragraphs with separator)
-    const combinedText = paragraphs.join("\n\n");
+  const scores: ContentScore[] = [];
 
-    // Limit to 5000 characters total to stay within API limits
-    const truncated = combinedText.slice(0, 5000);
+  // Send paragraphs individually (limit to 10 to avoid rate limiting)
+  const toAnalyze = paragraphs.slice(0, 10);
 
-    const response = await fetch(`${backendUrl}/detect/text`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: truncated, url: "" }),
-    });
+  for (let i = 0; i < toAnalyze.length; i++) {
+    const paragraph = toAnalyze[i].slice(0, 2000); // enforce max length
+    if (paragraph.length < 50) continue; // skip short fragments
 
-    if (!response.ok) {
-      console.error("[AI Shield BG] Backend text API error:", response.status);
-      return [];
-    }
+    try {
+      const response = await fetch(`${backendUrl}/detect/text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: paragraph }),
+      });
 
-    const data: DetectTextResponse = await response.json();
+      if (!response.ok) {
+        console.warn(
+          `[AI Shield BG] Backend returned ${response.status} for paragraph ${i}`,
+        );
+        continue;
+      }
 
-    // Map to ContentScore items (one per paragraph if details available,
-    // otherwise one overall score)
-    if (data.details?.sentences && data.details.sentences.length > 0) {
-      return data.details.sentences.slice(0, paragraphs.length).map((s, i) => ({
+      const data: DetectTextResponse = await response.json();
+
+      scores.push({
         id: `text-${i}`,
         type: "text" as const,
-        score: Math.round(s.score * 100),
-        preview: s.text.slice(0, 100),
+        score: Math.round(data.score * 100),
+        preview: paragraph.slice(0, 100),
         provider: data.provider,
-      }));
+      });
+    } catch (err) {
+      console.warn(`[AI Shield BG] Failed to analyze paragraph ${i}:`, err);
     }
-
-    // Single overall score — apply to each paragraph
-    return paragraphs.map((p, i) => ({
-      id: `text-${i}`,
-      type: "text" as const,
-      score: Math.round(data.score * 100),
-      preview: p.slice(0, 100),
-      provider: data.provider,
-    }));
-  } catch (err) {
-    console.error("[AI Shield BG] Failed to analyze text:", err);
-    return [];
   }
+
+  return scores;
 }
 
 /**
