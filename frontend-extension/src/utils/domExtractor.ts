@@ -11,9 +11,9 @@ const MAX_PARAGRAPHS = 20;
 /** Maximum number of images to extract */
 const MAX_IMAGES = 5;
 /** Minimum paragraph length to include (chars) */
-const MIN_PARAGRAPH_LENGTH = 40;
+const MIN_PARAGRAPH_LENGTH = 100;
 /** Maximum characters per paragraph sent to API */
-const MAX_PARAGRAPH_CHARS = 2000;
+const MAX_PARAGRAPH_CHARS = 4000;
 
 /** Selectors for elements to SKIP during extraction */
 const SKIP_SELECTORS = [
@@ -40,11 +40,26 @@ const SKIP_SELECTORS = [
   "style",
   "noscript",
   "iframe",
+  "button",
+  "svg",
+  "path",
   ".social-share",
   ".share-buttons",
   ".cookie-banner",
   ".cookie-notice",
   '[aria-hidden="true"]',
+  '[role="tooltip"]',
+  '[role="dialog"]',
+  '[role="menu"]',
+  '[role="menubar"]',
+  ".sr-only", // screen reader text
+  ".sr-only-focusable",
+  '[class*="hidden"]',
+  '[class*="sr-only"]',
+  '[class*="visually-hidden"]',
+  '[class*="tooltip"]',
+  '[class*="menu"]',
+  '[class*="button"]',
 ];
 
 /**

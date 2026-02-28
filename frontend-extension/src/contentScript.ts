@@ -217,23 +217,39 @@ function applyContentBlur(analysis: PageAnalysis): void {
   analysis.items
     .filter((item) => item.type === "text" && item.score > threshold)
     .forEach((item) => {
-      // Find DOM elements that might contain this text
+      if (!item.preview) return;
+
+      // Create a search snippet that is resilient to slight whitespace changes
+      const snippet = item.preview.slice(0, 80).replace(/\s+/g, "").trim();
+      if (snippet.length < 10) return;
+
       const elements = document.querySelectorAll(
         "p, article, li, blockquote, div, span, h1, h2, h3, h4",
       );
 
+      // Find the deeply nested element that contains this text
+      // to avoid blurring a massive parent container
+      let bestMatch: HTMLElement | null = null;
+      let minLength = Infinity;
+
       elements.forEach((el) => {
-        // Clean text the same way domExtractor does for accurate matching
-        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-        if (
-          text.length > 20 &&
-          text.length < 2000 && // avoid blurring entire layout wrappers
-          item.preview &&
-          text.includes(item.preview.slice(0, 50))
-        ) {
-          applyBlurToElement(el as HTMLElement, item.score);
+        const text = (el.textContent || "").replace(/\s+/g, "").trim();
+        if (text.includes(snippet)) {
+          if (text.length < minLength && text.length < 3000) {
+            minLength = text.length;
+            bestMatch = el as HTMLElement;
+          }
         }
       });
+
+      if (bestMatch) {
+        // Don't blur tiny inline spans if their parent is better
+        let target = bestMatch as HTMLElement;
+        if (target.tagName.toLowerCase() === "span" && target.parentElement) {
+          target = target.parentElement;
+        }
+        applyBlurToElement(target, item.score);
+      }
     });
 }
 
@@ -296,37 +312,49 @@ function highlightContentOnPage(preview: string): void {
   });
 
   // Search visible elements for a match
-  const searchSnippet = preview.slice(0, 60).replace(/\s+/g, " ").trim();
+  // We strip spaces for matching to handle DOM rendering vs extraction differences
+  const snippet = preview.slice(0, 80).replace(/\s+/g, "").trim();
+  if (snippet.length < 10) return;
+
   const candidates = document.querySelectorAll(
     "p, article, li, blockquote, div, span, h1, h2, h3, h4",
   );
 
+  let bestMatch: HTMLElement | null = null;
+  let minLength = Infinity;
+
   for (const el of candidates) {
-    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
-    if (
-      text.length > 15 &&
-      text.length < 3000 &&
-      text.includes(searchSnippet)
-    ) {
-      const htmlEl = el as HTMLElement;
-      // Scroll into view smoothly
-      htmlEl.scrollIntoView({ behavior: "smooth", block: "center" });
-
-      // Apply a glowing highlight
-      htmlEl.setAttribute("data-ai-shield-highlight", "true");
-      htmlEl.style.transition = "outline 0.3s ease, outline-offset 0.3s ease";
-      htmlEl.style.outline = "2px solid rgba(99, 102, 241, 0.8)";
-      htmlEl.style.outlineOffset = "4px";
-
-      // Remove highlight after 3 seconds
-      setTimeout(() => {
-        htmlEl.style.outline = "";
-        htmlEl.style.outlineOffset = "";
-        htmlEl.removeAttribute("data-ai-shield-highlight");
-      }, 3000);
-
-      break; // Only highlight the first match
+    const text = (el.textContent || "").replace(/\s+/g, "").trim();
+    if (text.includes(snippet)) {
+      if (text.length < minLength && text.length < 3000) {
+        minLength = text.length;
+        bestMatch = el as HTMLElement;
+      }
     }
+  }
+
+  if (bestMatch) {
+    let target = bestMatch as HTMLElement;
+    // Prefer parent for tiny spans to make highlight more visible
+    if (target.tagName.toLowerCase() === "span" && target.parentElement) {
+      target = target.parentElement;
+    }
+
+    // Scroll into view smoothly
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    // Apply a glowing highlight
+    target.setAttribute("data-ai-shield-highlight", "true");
+    target.style.transition = "outline 0.3s ease, outline-offset 0.3s ease";
+    target.style.outline = "2px solid rgba(99, 102, 241, 0.8)";
+    target.style.outlineOffset = "4px";
+
+    // Remove highlight after 3 seconds
+    setTimeout(() => {
+      target.style.outline = "";
+      target.style.outlineOffset = "";
+      target.removeAttribute("data-ai-shield-highlight");
+    }, 3000);
   }
 }
 
