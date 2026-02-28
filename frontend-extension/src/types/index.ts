@@ -59,7 +59,8 @@ export interface ExtensionMessage {
     | "BLUR_CONTENT" // background → content script: apply/remove blur
     | "INJECT_DOTS" // background → content script: Google search dots
     | "OPEN_SIDE_PANEL" // badge → background: open side panel
-    | "EXTRACT_CONTENT_TRIGGER"; // background → content script: trigger fresh extraction
+    | "EXTRACT_CONTENT_TRIGGER" // background → content script: trigger fresh extraction
+    | "HIGHLIGHT_ITEM"; // sidepanel → content script: scroll to and highlight a content item
   payload?: any;
 }
 

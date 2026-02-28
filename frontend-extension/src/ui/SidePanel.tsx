@@ -2,7 +2,8 @@
 // SidePanel — detailed AI analysis breakdown
 // ──────────────────────────────────────────────────────────
 // Shows page-level score, text vs image breakdown, AI density,
-// per-paragraph/image scores, threshold slider with blur toggle,
+// per-paragraph/image scores with click-to-highlight and
+// individual detail cards. Threshold slider with blur toggle,
 // and Elder Mode toggle.
 
 import React, { useEffect, useState, useCallback } from "react";
@@ -23,10 +24,13 @@ export const SidePanel: React.FC = () => {
   const [threshold, setThreshold] = useState(70);
   const [autoBlur, setAutoBlur] = useState(false);
   const [elderMode, setElderMode] = useState(false);
+  const [expandedItem, setExpandedItem] = useState<string | null>(null);
 
   // Load cached result and settings on mount
   useEffect(() => {
-    getCachedResult().then(setAnalysis);
+    getCachedResult().then((result) => {
+      if (result) setAnalysis(result);
+    });
     loadSettings().then((s) => {
       setSettings(s);
       setThreshold(s.threshold);
@@ -49,8 +53,12 @@ export const SidePanel: React.FC = () => {
 
   const handleAnalyze = async () => {
     setLoading(true);
-    const result = await requestAnalysis();
-    if (result) setAnalysis(result);
+    try {
+      const result = await requestAnalysis();
+      if (result) setAnalysis(result);
+    } catch (err) {
+      console.error("[SidePanel] Analysis failed:", err);
+    }
     setLoading(false);
   };
 
@@ -79,8 +87,40 @@ export const SidePanel: React.FC = () => {
     updateSettings({ elderMode: next });
   }, [elderMode]);
 
+  const handleItemClick = (item: ContentScore) => {
+    // Toggle expanded state
+    setExpandedItem(expandedItem === item.id ? null : item.id);
+
+    // Highlight on the page — send a message to content script
+    if (item.type === "text" && item.preview) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            type: "HIGHLIGHT_ITEM",
+            payload: { preview: item.preview, id: item.id },
+          });
+        }
+      });
+    }
+  };
+
   const score = analysis?.overallScore ?? 0;
   const color = getScoreColor(score);
+
+  // Helpers for readable labels
+  const getScoreLabel = (s: number) => {
+    if (s <= 20) return "Very likely human-written";
+    if (s <= 40) return "Probably human-written";
+    if (s <= 60) return "Uncertain — could be either";
+    if (s <= 80) return "Likely AI-generated";
+    return "Very likely AI-generated";
+  };
+
+  const getConfidenceLevel = (s: number) => {
+    if (s <= 20 || s >= 80) return "High confidence";
+    if (s <= 35 || s >= 65) return "Moderate confidence";
+    return "Low confidence";
+  };
 
   return (
     <div
@@ -118,8 +158,11 @@ export const SidePanel: React.FC = () => {
               >
                 {score}%
               </div>
-              <p className="text-xs text-glass-text-muted mt-1">
-                Likely AI-generated content
+              <p className="text-sm text-glass-text-muted mt-1">
+                {getScoreLabel(score)}
+              </p>
+              <p className="text-[10px] text-glass-text-dim mt-0.5">
+                {getConfidenceLevel(score)}
               </p>
             </div>
 
@@ -153,21 +196,46 @@ export const SidePanel: React.FC = () => {
       {/* ── Breakdown Card ── */}
       {analysis && (
         <div className="glass-panel p-4 space-y-3 animate-fade-in">
-          <h2 className="text-sm font-semibold text-glass-200">Breakdown</h2>
+          <h2 className="text-sm font-semibold text-glass-200">
+            Content Breakdown
+          </h2>
 
           {/* Text vs Image scores */}
           <div className="grid grid-cols-3 gap-3">
-            <ScoreStat label="Text" value={analysis.textScore} />
-            <ScoreStat label="Images" value={analysis.imageScore} />
-            <ScoreStat label="AI Density" value={analysis.aiDensity} />
+            <ScoreStat label="📝 Text" value={analysis.textScore} />
+            <ScoreStat label="🖼️ Images" value={analysis.imageScore} />
+            <ScoreStat label="📊 Density" value={analysis.aiDensity} />
+          </div>
+
+          {/* Readable explanation */}
+          <div className="text-xs text-glass-text-muted bg-glass-800/30 p-2 rounded-lg">
+            {analysis.items.filter((i) => i.type === "text").length} text
+            sections and{" "}
+            {analysis.items.filter((i) => i.type === "image").length} images
+            analyzed.{" "}
+            {analysis.aiDensity > 50
+              ? `${analysis.aiDensity}% of text sections show AI patterns.`
+              : `Most content appears human-written.`}
           </div>
 
           <div className="glass-divider" />
 
-          {/* Per-item details */}
-          <div className="space-y-2 max-h-48 overflow-y-auto">
+          {/* Per-item details — clickable and expandable */}
+          <h3 className="text-xs font-semibold text-glass-text-muted">
+            Detected Items{" "}
+            <span className="text-glass-text-dim font-normal">
+              (click to highlight on page)
+            </span>
+          </h3>
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {analysis.items.map((item) => (
-              <ContentItemRow key={item.id} item={item} threshold={threshold} />
+              <ContentItemRow
+                key={item.id}
+                item={item}
+                threshold={threshold}
+                expanded={expandedItem === item.id}
+                onClick={() => handleItemClick(item)}
+              />
             ))}
           </div>
         </div>
@@ -243,30 +311,134 @@ const ScoreStat: React.FC<{ label: string; value: number }> = ({
   </div>
 );
 
-const ContentItemRow: React.FC<{ item: ContentScore; threshold: number }> = ({
+interface ContentItemRowProps {
+  item: ContentScore;
+  threshold: number;
+  expanded: boolean;
+  onClick: () => void;
+}
+
+const ContentItemRow: React.FC<ContentItemRowProps> = ({
   item,
   threshold,
+  expanded,
+  onClick,
 }) => {
   const flagged = item.score > threshold;
+  const scoreLabel =
+    item.score <= 30
+      ? "Human"
+      : item.score <= 60
+        ? "Mixed"
+        : item.score <= 80
+          ? "Likely AI"
+          : "AI";
+
+  // Truncate preview for readability
+  const shortPreview = item.preview
+    ? item.preview.length > 80
+      ? item.preview.slice(0, 80) + "…"
+      : item.preview
+    : "No preview available";
+
   return (
     <div
       className={clsx(
-        "flex items-center gap-2 text-xs p-2 rounded-lg",
-        flagged ? "bg-red-500/10" : "bg-glass-800/30",
+        "rounded-lg cursor-pointer transition-all duration-200",
+        flagged
+          ? "bg-red-500/10 hover:bg-red-500/20"
+          : "bg-glass-800/30 hover:bg-glass-800/50",
+        expanded && "ring-1 ring-glass-400/30",
       )}
+      onClick={onClick}
     >
-      <span>{item.type === "text" ? "📝" : "🖼️"}</span>
-      <span className="flex-1 truncate text-glass-text-muted">
-        {item.preview}
-      </span>
-      <span
-        className={clsx(
-          "font-mono font-semibold",
-          getScoreColorClass(item.score),
-        )}
-      >
-        {item.score}%
-      </span>
+      {/* Main row */}
+      <div className="flex items-center gap-2 text-xs p-2.5">
+        <span className="text-base">{item.type === "text" ? "📝" : "🖼️"}</span>
+        <div className="flex-1 min-w-0">
+          <span className="text-glass-text-muted block truncate">
+            {shortPreview}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span
+            className={clsx(
+              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+              item.score <= 30
+                ? "bg-green-500/20 text-green-400"
+                : item.score <= 60
+                  ? "bg-yellow-500/20 text-yellow-400"
+                  : "bg-red-500/20 text-red-400",
+            )}
+          >
+            {scoreLabel}
+          </span>
+          <span
+            className={clsx(
+              "font-mono font-semibold text-sm",
+              getScoreColorClass(item.score),
+            )}
+          >
+            {item.score}%
+          </span>
+        </div>
+      </div>
+
+      {/* Expanded detail card */}
+      {expanded && (
+        <div className="px-3 pb-3 pt-1 border-t border-glass-700/30 space-y-2 animate-fade-in">
+          {/* Full preview text */}
+          <div className="text-[11px] text-glass-text leading-relaxed bg-glass-900/40 p-2 rounded">
+            {item.preview || "No text content available"}
+          </div>
+
+          {/* Score breakdown */}
+          <div className="grid grid-cols-2 gap-2 text-[10px]">
+            <div className="bg-glass-800/40 p-1.5 rounded">
+              <span className="text-glass-text-dim">Type:</span>{" "}
+              <span className="text-glass-text">
+                {item.type === "text" ? "Text section" : "Image"}
+              </span>
+            </div>
+            <div className="bg-glass-800/40 p-1.5 rounded">
+              <span className="text-glass-text-dim">Provider:</span>{" "}
+              <span className="text-glass-text">{item.provider}</span>
+            </div>
+            <div className="bg-glass-800/40 p-1.5 rounded">
+              <span className="text-glass-text-dim">AI Score:</span>{" "}
+              <span className={getScoreColorClass(item.score)}>
+                {item.score}%
+              </span>
+            </div>
+            <div className="bg-glass-800/40 p-1.5 rounded">
+              <span className="text-glass-text-dim">Verdict:</span>{" "}
+              <span className="text-glass-text">
+                {item.score <= 30
+                  ? "Likely human"
+                  : item.score <= 60
+                    ? "Uncertain"
+                    : "Likely AI"}
+              </span>
+            </div>
+          </div>
+
+          {/* Visual score bar */}
+          <div className="glass-progress h-1.5">
+            <div
+              className={clsx("glass-progress-bar h-full rounded-full", {
+                "bg-score-safe": item.score <= 40,
+                "bg-score-caution": item.score > 40 && item.score <= 70,
+                "bg-score-danger": item.score > 70,
+              })}
+              style={{ width: `${item.score}%` }}
+            />
+          </div>
+
+          <p className="text-[9px] text-glass-text-dim italic">
+            Click to scroll to this content on the page
+          </p>
+        </div>
+      )}
     </div>
   );
 };

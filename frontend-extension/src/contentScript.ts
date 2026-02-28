@@ -224,7 +224,7 @@ function applyContentBlur(analysis: PageAnalysis): void {
 
       elements.forEach((el) => {
         // Clean text the same way domExtractor does for accurate matching
-        const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
         if (
           text.length > 20 &&
           text.length < 2000 && // avoid blurring entire layout wrappers
@@ -280,6 +280,54 @@ function applyBlurToElement(el: HTMLElement, score: number): void {
   el.parentNode?.insertBefore(wrapper, el);
   wrapper.appendChild(el);
   wrapper.appendChild(label);
+}
+
+// ──────────────────────────────────────────────────────────
+// Highlight content on page (triggered from SidePanel)
+// ──────────────────────────────────────────────────────────
+
+function highlightContentOnPage(preview: string): void {
+  // Remove any previous highlights
+  document.querySelectorAll("[data-ai-shield-highlight]").forEach((el) => {
+    (el as HTMLElement).style.outline = "";
+    (el as HTMLElement).style.outlineOffset = "";
+    (el as HTMLElement).style.transition = "";
+    el.removeAttribute("data-ai-shield-highlight");
+  });
+
+  // Search visible elements for a match
+  const searchSnippet = preview.slice(0, 60).replace(/\s+/g, " ").trim();
+  const candidates = document.querySelectorAll(
+    "p, article, li, blockquote, div, span, h1, h2, h3, h4",
+  );
+
+  for (const el of candidates) {
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (
+      text.length > 15 &&
+      text.length < 3000 &&
+      text.includes(searchSnippet)
+    ) {
+      const htmlEl = el as HTMLElement;
+      // Scroll into view smoothly
+      htmlEl.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Apply a glowing highlight
+      htmlEl.setAttribute("data-ai-shield-highlight", "true");
+      htmlEl.style.transition = "outline 0.3s ease, outline-offset 0.3s ease";
+      htmlEl.style.outline = "2px solid rgba(99, 102, 241, 0.8)";
+      htmlEl.style.outlineOffset = "4px";
+
+      // Remove highlight after 3 seconds
+      setTimeout(() => {
+        htmlEl.style.outline = "";
+        htmlEl.style.outlineOffset = "";
+        htmlEl.removeAttribute("data-ai-shield-highlight");
+      }, 3000);
+
+      break; // Only highlight the first match
+    }
+  }
 }
 
 // ──────────────────────────────────────────────────────────
@@ -353,6 +401,16 @@ chrome.runtime.onMessage.addListener(
         // Background requesting a fresh extraction
         init().then(() => sendResponse({ ok: true }));
         return true;
+
+      case "HIGHLIGHT_ITEM": {
+        // SidePanel requesting we scroll to and highlight a content item
+        const { preview } = message.payload || {};
+        if (preview) {
+          highlightContentOnPage(preview);
+        }
+        sendResponse({ ok: true });
+        break;
+      }
 
       default:
         sendResponse({ ok: false, error: "Unknown message type" });

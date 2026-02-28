@@ -162,12 +162,15 @@ async function handleExtraction(
 
 /**
  * Handle manual "Analyze" button press — extract and analyze the active tab.
+ * The flow: trigger content script → it extracts → sends EXTRACT_CONTENT back
+ * to background → handleExtraction runs → stores in session storage.
+ * We poll session storage for the fresh result.
  */
 async function handleManualAnalysis(
   tabId?: number,
 ): Promise<PageAnalysis | null> {
   if (!tabId) {
-    // Get the active tab
+    // Get the active tab (popup/sidepanel don't have sender.tab)
     const [tab] = await chrome.tabs.query({
       active: true,
       currentWindow: true,
@@ -182,16 +185,41 @@ async function handleManualAnalysis(
     chrome.tabs.sendMessage(
       tabId!,
       { type: "EXTRACT_CONTENT_TRIGGER" },
-      (response) => {
+      (_response) => {
         if (chrome.runtime.lastError) {
           console.warn(
             "[AI Shield BG] Manual analysis trigger failed:",
             chrome.runtime.lastError.message,
           );
           resolve(null);
-        } else {
-          resolve(response);
+          return;
         }
+
+        // The content script will send EXTRACT_CONTENT back to us,
+        // which handleExtraction processes and stores in session storage.
+        // Poll for the result (it takes 1-3 seconds for the backend call).
+        const pollKey = `tab_${tabId}`;
+        let attempts = 0;
+        const maxAttempts = 15; // 15 * 500ms = 7.5s max wait
+
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const stored = await chrome.storage.session.get(pollKey);
+            const result = stored[pollKey] as PageAnalysis | undefined;
+            if (result && Date.now() - result.analyzedAt < 10000) {
+              // Fresh result found
+              clearInterval(poll);
+              resolve(result);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(poll);
+              resolve(null);
+            }
+          } catch {
+            clearInterval(poll);
+            resolve(null);
+          }
+        }, 500);
       },
     );
   });
