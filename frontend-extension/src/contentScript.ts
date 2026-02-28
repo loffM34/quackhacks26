@@ -285,10 +285,7 @@ function injectSearchDots(): void {
   });
 }
 
-// ──────────────────────────────────────────────────────────
-// Listen for messages from background / popup
-// ──────────────────────────────────────────────────────────
-
+// ── Listen for messages from background / popup ──
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse) => {
     switch (message.type) {
@@ -309,12 +306,37 @@ chrome.runtime.onMessage.addListener(
         sendResponse({ ok: true });
         break;
 
+      case "EXTRACT_CONTENT_TRIGGER":
+        // Background requesting a fresh extraction
+        init().then(() => sendResponse({ ok: true }));
+        return true;
+
       default:
         sendResponse({ ok: false, error: "Unknown message type" });
     }
     return true; // keep channel open for async
   },
 );
+
+// ── SPA Support: Listen for URL changes ──
+let lastUrl = window.location.href;
+const observer = new MutationObserver(() => {
+  if (window.location.href !== lastUrl) {
+    lastUrl = window.location.href;
+    console.log("[AI Shield] URL changed, re-initializing...");
+    // Clear old state
+    if (badgeElement) badgeElement.remove();
+    badgeElement = null;
+    currentAnalysis = null;
+    // Re-run init with a delay
+    setTimeout(init, INIT_DELAY_MS);
+  }
+});
+
+observer.observe(document.querySelector("title") || document.documentElement, {
+  subtree: true,
+  childList: true,
+});
 
 // ── Load settings helper ──
 function loadSettings(): Promise<ShieldSettings> {

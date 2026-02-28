@@ -177,21 +177,24 @@ async function handleManualAnalysis(
 
   if (!tabId) return null;
 
-  // Execute content extraction in the tab
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      // This runs in the content script world — trigger extraction
-      return new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { type: "EXTRACT_CONTENT_TRIGGER" },
-          resolve,
-        );
-      });
-    },
+  // Trigger fresh extraction in the content script
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(
+      tabId!,
+      { type: "EXTRACT_CONTENT_TRIGGER" },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "[AI Shield BG] Manual analysis trigger failed:",
+            chrome.runtime.lastError.message,
+          );
+          resolve(null);
+        } else {
+          resolve(response);
+        }
+      },
+    );
   });
-
-  return results?.[0]?.result as PageAnalysis | null;
 }
 
 /**
