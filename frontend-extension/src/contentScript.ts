@@ -272,24 +272,75 @@ function findRangeForSnippet(snippet: string): Range | null {
 
 /**
  * Strategy 2: Element-based fallback — finds the smallest DOM element
- * whose text content contains the snippet. Works on any site.
+ * whose text content contains the snippet. Uses a sliding window fuzzy match
+ * to handle cases where the DOM has weird spacing/characters compared to extraction.
  */
 function findElementForSnippet(snippet: string): HTMLElement | null {
   const normSnippet = snippet.replace(/\s+/g, "").toLowerCase();
   if (normSnippet.length < 10) return null;
 
-  const candidates = document.querySelectorAll(
-    "p, article, li, blockquote, div, span, h1, h2, h3, h4, h5, h6, td, th, pre, code, section, main",
+  // Basic candidates on the main document
+  let candidates = Array.from(
+    document.querySelectorAll(
+      "p, article, li, blockquote, div, span, h1, h2, h3, h4, h5, h6, td, th, pre, code, section, main",
+    ),
   );
+
+  // Google Docs specific support: they render inside a cross-origin-like but same-origin iframe
+  const gDocsIframe = document.querySelector(
+    ".kix-appview-editor",
+  ) as HTMLIFrameElement;
+  if (gDocsIframe && gDocsIframe.contentDocument) {
+    try {
+      const gDocsCandidates = Array.from(
+        gDocsIframe.contentDocument.querySelectorAll("span, div, p"),
+      );
+      candidates = candidates.concat(gDocsCandidates);
+    } catch (e) {
+      console.warn(
+        "[AI Shield] Could not access Google Docs iframe contents:",
+        e,
+      );
+    }
+  }
 
   let bestMatch: HTMLElement | null = null;
   let bestLength = Infinity;
 
+  // Simple fuzzy match: does the element text contain at least 80% of the target string in order?
   for (const el of candidates) {
     const text = (el.textContent || "").replace(/\s+/g, "").toLowerCase();
-    if (text.length > 0 && text.length < 5000 && text.includes(normSnippet)) {
-      // Prefer the smallest (most specific) containing element
+
+    // Skip massive containers to avoid blurring the whole page
+    if (text.length === 0 || text.length > 5000) continue;
+
+    // Exact match is always preferred
+    if (text.includes(normSnippet)) {
       if (text.length < bestLength) {
+        bestLength = text.length;
+        bestMatch = el as HTMLElement;
+      }
+      continue;
+    }
+
+    // Fuzzy match: check if 80% of the snippet characters appear in order within a reasonable window
+    if (text.length >= normSnippet.length * 0.8) {
+      let snippetIdx = 0;
+      let matchCount = 0;
+      const targetMatches = Math.floor(normSnippet.length * 0.85); // 85% character match
+
+      for (let i = 0; i < text.length && snippetIdx < normSnippet.length; i++) {
+        if (text[i] === normSnippet[snippetIdx]) {
+          matchCount++;
+          snippetIdx++;
+        } else {
+          // Keep trying to advance the snippet if it's a minor discrepancy,
+          // but we mostly want contiguous-ish matches.
+          // If we've matched enough, we consider it a hit.
+        }
+      }
+
+      if (matchCount >= targetMatches && text.length < bestLength) {
         bestLength = text.length;
         bestMatch = el as HTMLElement;
       }
