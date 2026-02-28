@@ -133,10 +133,14 @@ export function extractPageContent(): PageExtraction {
       (img as HTMLImageElement).naturalHeight ||
       (img as HTMLImageElement).height;
 
-    // Skip tiny images (icons, tracking pixels)
-    if (width < 100 || height < 100) continue;
+    // Skip small images (icons, avatars, tracking pixels, UI elements)
+    if (width < 200 || height < 200) continue;
     // Skip data URIs that are too small or SVGs
     if (src.startsWith("data:image/svg")) continue;
+    // Skip common icon/logo/avatar patterns in URLs
+    if (/\/(icon|logo|avatar|favicon|badge|emoji|sticker)/i.test(src)) continue;
+    // Skip tiny base64 images (< 5KB is likely an icon)
+    if (src.startsWith("data:") && src.length < 7000) continue;
 
     images.push(src);
   }

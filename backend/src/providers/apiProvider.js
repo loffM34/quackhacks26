@@ -53,8 +53,14 @@ export const apiProvider = {
     try {
       return await callHuggingFaceImage(imageData);
     } catch {
-      // Fallback mock for hackathon
-      return mockImageScore();
+      // Don't return a fake score—just return 0 so we don't report a false positive
+      console.warn("[apiProvider] Image analysis failed, returning 0 score");
+      return {
+        score: 0,
+        provider: "huggingface-image",
+        error: "analysis_failed",
+        details: { note: "Image analysis unavailable" },
+      };
     }
   },
 };

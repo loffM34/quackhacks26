@@ -208,115 +208,196 @@ function injectFloatingBadge(score: number | null): void {
 }
 
 // ──────────────────────────────────────────────────────────
-// Content Blur
+// Text matching helpers for blur & highlight
 // ──────────────────────────────────────────────────────────
 
+/**
+ * Strategy 1: TreeWalker Range — finds exact text node positions.
+ * Works great on standard pages but fails on canvas/iframe-based
+ * renderers like Google Docs.
+ */
 function findRangeForSnippet(snippet: string): Range | null {
   const normSnippet = snippet.replace(/\s+/g, "").toLowerCase();
   if (normSnippet.length < 10) return null;
 
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    null,
-  );
-  let node;
-  let fullText = "";
-  const nodes: { node: Text; start: number; end: number }[] = [];
+  try {
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      null,
+    );
+    let node;
+    let fullText = "";
+    const nodes: { node: Text; start: number; end: number }[] = [];
 
-  while ((node = walker.nextNode() as Text)) {
-    const parent = node.parentElement;
-    if (parent) {
-      const tag = parent.tagName;
-      if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") continue;
-      // skip completely hidden elements
-      const style = window.getComputedStyle(parent);
-      if (style.display === "none" || style.visibility === "hidden") continue;
+    while ((node = walker.nextNode() as Text)) {
+      const parent = node.parentElement;
+      if (parent) {
+        const tag = parent.tagName;
+        if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") continue;
+        const style = window.getComputedStyle(parent);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+      }
+
+      const text = (node.nodeValue || "").replace(/\s+/g, "").toLowerCase();
+      if (!text) continue;
+
+      nodes.push({
+        node,
+        start: fullText.length,
+        end: fullText.length + text.length,
+      });
+      fullText += text;
     }
 
-    const text = (node.nodeValue || "").replace(/\s+/g, "").toLowerCase();
-    if (!text) continue;
+    const matchIdx = fullText.indexOf(normSnippet);
+    if (matchIdx === -1) return null;
 
-    nodes.push({
-      node,
-      start: fullText.length,
-      end: fullText.length + text.length,
-    });
-    fullText += text;
+    const matchEnd = matchIdx + normSnippet.length;
+    const overlapping = nodes.filter(
+      (n) => n.end > matchIdx && n.start < matchEnd,
+    );
+
+    if (overlapping.length === 0) return null;
+
+    const range = document.createRange();
+    range.setStartBefore(overlapping[0].node);
+    range.setEndAfter(overlapping[overlapping.length - 1].node);
+    return range;
+  } catch (e) {
+    console.warn("[AI Shield] TreeWalker failed:", e);
+    return null;
   }
+}
 
-  const matchIdx = fullText.indexOf(normSnippet);
-  if (matchIdx === -1) return null;
+/**
+ * Strategy 2: Element-based fallback — finds the smallest DOM element
+ * whose text content contains the snippet. Works on any site.
+ */
+function findElementForSnippet(snippet: string): HTMLElement | null {
+  const normSnippet = snippet.replace(/\s+/g, "").toLowerCase();
+  if (normSnippet.length < 10) return null;
 
-  const matchEnd = matchIdx + normSnippet.length;
-  const overlapping = nodes.filter(
-    (n) => n.end > matchIdx && n.start < matchEnd,
+  const candidates = document.querySelectorAll(
+    "p, article, li, blockquote, div, span, h1, h2, h3, h4, h5, h6, td, th, pre, code, section, main",
   );
 
-  if (overlapping.length === 0) return null;
+  let bestMatch: HTMLElement | null = null;
+  let bestLength = Infinity;
 
-  const range = document.createRange();
-  range.setStartBefore(overlapping[0].node);
-  range.setEndAfter(overlapping[overlapping.length - 1].node);
-  return range;
+  for (const el of candidates) {
+    const text = (el.textContent || "").replace(/\s+/g, "").toLowerCase();
+    if (text.length > 0 && text.length < 5000 && text.includes(normSnippet)) {
+      // Prefer the smallest (most specific) containing element
+      if (text.length < bestLength) {
+        bestLength = text.length;
+        bestMatch = el as HTMLElement;
+      }
+    }
+  }
+
+  return bestMatch;
 }
+
+/**
+ * Get the bounding rect for a snippet — tries TreeWalker first, then element fallback.
+ */
+function getRectForSnippet(
+  snippet: string,
+): { rect: DOMRect; method: string } | null {
+  // Strategy 1: TreeWalker Range
+  const range = findRangeForSnippet(snippet);
+  if (range) {
+    const rect = range.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return { rect, method: "range" };
+    }
+  }
+
+  // Strategy 2: Element fallback
+  const element = findElementForSnippet(snippet);
+  if (element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return { rect, method: "element" };
+    }
+  }
+
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────
+// Content Blur (Overlay Method)
+// ──────────────────────────────────────────────────────────
 
 function applyContentBlur(analysis: PageAnalysis): void {
   const threshold = settings?.threshold ?? 70;
+
+  console.log(
+    `[AI Shield] Applying blur. Threshold: ${threshold}%, Items: ${analysis.items.length}`,
+  );
 
   analysis.items
     .filter((item) => item.type === "text" && item.score > threshold)
     .forEach((item) => {
       if (!item.preview) return;
       const snippet = item.preview.slice(0, 80);
-      const range = findRangeForSnippet(snippet);
-      if (range) {
-        applyOverlayBlur(range, item.score);
+      const match = getRectForSnippet(snippet);
+      if (match) {
+        console.log(
+          `[AI Shield] Blurring item (${match.method}): "${snippet.slice(0, 30)}..."`,
+        );
+        applyOverlayBlur(match.rect, item.score);
+      } else {
+        console.warn(
+          `[AI Shield] Could not find DOM match for blur: "${snippet.slice(0, 30)}..."`,
+        );
       }
     });
 }
 
-function applyOverlayBlur(range: Range, score: number): void {
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return;
-
+function applyOverlayBlur(rect: DOMRect, score: number): void {
   const overlay = document.createElement("div");
   overlay.className = "ai-shield-blur-overlay";
-  overlay.style.position = "absolute";
-  overlay.style.top = `${rect.top + window.scrollY - 4}px`;
-  overlay.style.left = `${rect.left + window.scrollX - 4}px`;
-  overlay.style.width = `${rect.width + 8}px`;
-  overlay.style.height = `${rect.height + 8}px`;
-  overlay.style.backdropFilter = "blur(6px) saturate(0.85)";
-  overlay.style.backgroundColor = "rgba(10,26,74,0.15)";
-  overlay.style.zIndex = "2147483646";
-  overlay.style.borderRadius = "6px";
-  overlay.style.border = "1px solid rgba(148,163,184,0.2)";
-  overlay.style.transition = "opacity 0.3s ease";
+  overlay.style.cssText = `
+    position: absolute;
+    top: ${rect.top + window.scrollY - 4}px;
+    left: ${rect.left + window.scrollX - 4}px;
+    width: ${rect.width + 8}px;
+    height: ${rect.height + 8}px;
+    backdrop-filter: blur(6px) saturate(0.85);
+    -webkit-backdrop-filter: blur(6px) saturate(0.85);
+    background-color: rgba(10,26,74,0.15);
+    z-index: 2147483646;
+    border-radius: 6px;
+    border: 1px solid rgba(148,163,184,0.2);
+    transition: opacity 0.3s ease;
+    pointer-events: auto;
+  `;
 
   const label = document.createElement("div");
   label.textContent = `Hidden: likely AI (${Math.round(score)}%) — click to show`;
-  Object.assign(label.style, {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    transform: "translate(-50%, -50%)",
-    background: "rgba(10,26,74,0.95)",
-    color: "#e2e8f0",
-    padding: "8px 16px",
-    borderRadius: "8px",
-    fontSize: "13px",
-    fontWeight: "500",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-    border: "1px solid rgba(148,163,184,0.3)",
-  });
+  label.style.cssText = `
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(10,26,74,0.95);
+    color: #e2e8f0;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    border: 1px solid rgba(148,163,184,0.3);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  `;
 
   overlay.appendChild(label);
   document.body.appendChild(overlay);
 
-  // Click anywhere on the overlay (or label) to reveal
   overlay.addEventListener("click", () => {
     overlay.style.opacity = "0";
     setTimeout(() => overlay.remove(), 300);
@@ -334,29 +415,41 @@ function highlightContentOnPage(preview: string): void {
   });
 
   const snippet = preview.slice(0, 80);
-  const range = findRangeForSnippet(snippet);
-  if (!range) return;
+  const match = getRectForSnippet(snippet);
 
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return;
+  if (!match) {
+    console.warn(
+      `[AI Shield] Could not find DOM match for highlight: "${snippet.slice(0, 30)}..."`,
+    );
+    return;
+  }
+
+  console.log(
+    `[AI Shield] Highlighting item (${match.method}): "${snippet.slice(0, 30)}..."`,
+  );
+
+  const rect = match.rect;
 
   const overlay = document.createElement("div");
   overlay.className = "ai-shield-highlight-overlay";
-  overlay.style.position = "absolute";
-  overlay.style.top = `${rect.top + window.scrollY - 6}px`;
-  overlay.style.left = `${rect.left + window.scrollX - 6}px`;
-  overlay.style.width = `${rect.width + 12}px`;
-  overlay.style.height = `${rect.height + 12}px`;
-  overlay.style.border = "3px solid rgba(99, 102, 241, 0.9)";
-  overlay.style.backgroundColor = "rgba(99, 102, 241, 0.2)";
-  overlay.style.borderRadius = "6px";
-  overlay.style.pointerEvents = "none";
-  overlay.style.zIndex = "2147483647";
-  overlay.style.transition = "opacity 0.3s ease";
+  overlay.style.cssText = `
+    position: absolute;
+    top: ${rect.top + window.scrollY - 6}px;
+    left: ${rect.left + window.scrollX - 6}px;
+    width: ${rect.width + 12}px;
+    height: ${rect.height + 12}px;
+    border: 3px solid rgba(99, 102, 241, 0.9);
+    background-color: rgba(99, 102, 241, 0.15);
+    border-radius: 6px;
+    pointer-events: none;
+    z-index: 2147483647;
+    transition: opacity 0.3s ease;
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+  `;
 
   document.body.appendChild(overlay);
 
-  // Scroll into view comfortably
+  // Scroll into view
   const elementTop = rect.top + window.scrollY;
   window.scrollTo({
     top: elementTop - window.innerHeight / 2 + rect.height / 2,
