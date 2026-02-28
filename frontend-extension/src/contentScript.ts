@@ -22,6 +22,8 @@ console.log("[AI Shield] Content script initialized. Ready to scan.");
 let currentAnalysis: PageAnalysis | null = null;
 let settings: ShieldSettings | null = null;
 let badgeElement: HTMLElement | null = null;
+let hasMeaningfulContent = false;
+let isAnalyzing = false;
 
 // ── Initialization ──
 // Wait a brief moment after page load for dynamic content to settle
@@ -47,7 +49,11 @@ async function init(): Promise<void> {
   }
 
   // Inject initial "Analyzing..." badge
-  injectFloatingBadge(null);
+  if (!badgeElement) {
+    injectFloatingBadge(null);
+  }
+
+  isAnalyzing = true;
 
   // Extract page content
   const extraction = extractPageContent();
@@ -55,6 +61,8 @@ async function init(): Promise<void> {
   // Skip if page has very little content
   if (extraction.paragraphs.length === 0 && extraction.images.length === 0) {
     console.log("[AI Shield] No meaningful content found on page.");
+    hasMeaningfulContent = false;
+    isAnalyzing = false;
     if (badgeElement) {
       badgeElement.innerHTML = `
         <span style="color: #94a3b8; font-weight: 600;">AI: N/A (Short text)</span>
@@ -63,6 +71,8 @@ async function init(): Promise<void> {
     }
     return;
   }
+
+  hasMeaningfulContent = true;
 
   // Compress images before sending (limit bandwidth)
   const compressedImages = await compressImages(extraction.images);
@@ -77,6 +87,7 @@ async function init(): Promise<void> {
   };
 
   chrome.runtime.sendMessage(message, (response: PageAnalysis | null) => {
+    isAnalyzing = false;
     if (chrome.runtime.lastError) {
       console.warn(
         "[AI Shield] Background error:",
@@ -206,16 +217,21 @@ function applyContentBlur(analysis: PageAnalysis): void {
   analysis.items
     .filter((item) => item.type === "text" && item.score > threshold)
     .forEach((item) => {
-      // Find paragraph DOM elements that match this content
-      const paragraphs = document.querySelectorAll("p");
-      paragraphs.forEach((p) => {
-        const text = (p.textContent || "").trim();
+      // Find DOM elements that might contain this text
+      const elements = document.querySelectorAll(
+        "p, article, li, blockquote, div, span, h1, h2, h3, h4",
+      );
+
+      elements.forEach((el) => {
+        // Clean text the same way domExtractor does for accurate matching
+        const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
         if (
           text.length > 20 &&
+          text.length < 2000 && // avoid blurring entire layout wrappers
           item.preview &&
           text.includes(item.preview.slice(0, 50))
         ) {
-          applyBlurToElement(p as HTMLElement, item.score);
+          applyBlurToElement(el as HTMLElement, item.score);
         }
       });
     });
@@ -345,10 +361,11 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
-// ── SPA Support: Listen for URL changes ──
+// ── SPA Support: Listen for URL changes and content loading ──
 let lastUrl = window.location.href;
 
 setInterval(() => {
+  // Check for URL changes
   if (window.location.href !== lastUrl) {
     lastUrl = window.location.href;
     console.log("[AI Shield] URL changed, re-initializing...");
@@ -356,10 +373,24 @@ setInterval(() => {
     if (badgeElement) badgeElement.remove();
     badgeElement = null;
     currentAnalysis = null;
+    hasMeaningfulContent = false;
+    isAnalyzing = false;
     // Re-run init with a delay
     setTimeout(init, Math.max(INIT_DELAY_MS, 1500));
   }
-}, 1000); // Check every second
+  // Retry extraction if the page loaded slowly and we previously found no content
+  else if (!hasMeaningfulContent && !isAnalyzing && currentAnalysis === null) {
+    // Quick heuristic check to see if DOM has populated
+    const textNodes = document.querySelectorAll("p, article, div");
+    if (textNodes.length > 10) {
+      console.log(
+        "[AI Shield] Late-loading content detected. Retrying scan...",
+      );
+      isAnalyzing = true; // prevent overlapping retries
+      init();
+    }
+  }
+}, 1500); // Check every 1.5 seconds
 
 // ── Load settings helper ──
 function loadSettings(): Promise<ShieldSettings> {
