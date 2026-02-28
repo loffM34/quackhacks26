@@ -16,6 +16,8 @@ import type {
   ShieldSettings,
 } from "./types";
 
+console.log("[AI Shield] Content script initialized. Ready to scan.");
+
 // ── State ──
 let currentAnalysis: PageAnalysis | null = null;
 let settings: ShieldSettings | null = null;
@@ -26,6 +28,9 @@ let badgeElement: HTMLElement | null = null;
 const INIT_DELAY_MS = 1500;
 const DEBOUNCE_MS = 2000;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Replace observer with setInterval for initial scan
+let initInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Main initialization — runs after page load + delay.
@@ -342,7 +347,8 @@ chrome.runtime.onMessage.addListener(
 
 // ── SPA Support: Listen for URL changes ──
 let lastUrl = window.location.href;
-const observer = new MutationObserver(() => {
+
+setInterval(() => {
   if (window.location.href !== lastUrl) {
     lastUrl = window.location.href;
     console.log("[AI Shield] URL changed, re-initializing...");
@@ -351,14 +357,9 @@ const observer = new MutationObserver(() => {
     badgeElement = null;
     currentAnalysis = null;
     // Re-run init with a delay
-    setTimeout(init, INIT_DELAY_MS);
+    setTimeout(init, Math.max(INIT_DELAY_MS, 1500));
   }
-});
-
-observer.observe(document.querySelector("title") || document.documentElement, {
-  subtree: true,
-  childList: true,
-});
+}, 1000); // Check every second
 
 // ── Load settings helper ──
 function loadSettings(): Promise<ShieldSettings> {
