@@ -41,12 +41,21 @@ async function init(): Promise<void> {
     return;
   }
 
+  // Inject initial "Analyzing..." badge
+  injectFloatingBadge(null);
+
   // Extract page content
   const extraction = extractPageContent();
 
   // Skip if page has very little content
   if (extraction.paragraphs.length === 0 && extraction.images.length === 0) {
     console.log("[AI Shield] No meaningful content found on page.");
+    if (badgeElement) {
+      badgeElement.innerHTML = `
+        <span style="color: #94a3b8; font-weight: 600;">AI: N/A (Short text)</span>
+        <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
+      `;
+    }
     return;
   }
 
@@ -68,6 +77,12 @@ async function init(): Promise<void> {
         "[AI Shield] Background error:",
         chrome.runtime.lastError.message,
       );
+      if (badgeElement) {
+        badgeElement.innerHTML = `
+          <span style="color: #ef4444; font-weight: 600;">AI: Error</span>
+          <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
+        `;
+      }
       return;
     }
     if (response) {
@@ -104,7 +119,7 @@ function handleAnalysisResult(analysis: PageAnalysis): void {
 // Floating Badge (injected into page DOM)
 // ──────────────────────────────────────────────────────────
 
-function injectFloatingBadge(score: number): void {
+function injectFloatingBadge(score: number | null): void {
   // Remove existing badge if present
   if (badgeElement) badgeElement.remove();
 
@@ -112,16 +127,23 @@ function injectFloatingBadge(score: number): void {
   badge.id = "ai-shield-badge";
 
   // Determine color based on score
-  const color = score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444";
-  const bgColor =
-    score <= 40
-      ? "rgba(34,197,94,0.15)"
-      : score <= 70
-        ? "rgba(234,179,8,0.15)"
-        : "rgba(239,68,68,0.15)";
+  let color = "#94a3b8"; // Default parsing gray
+  let bgColor = "rgba(148,163,184,0.15)";
+  let scoreText = "Scanning...";
+
+  if (score !== null) {
+    color = score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444";
+    bgColor =
+      score <= 40
+        ? "rgba(34,197,94,0.15)"
+        : score <= 70
+          ? "rgba(234,179,8,0.15)"
+          : "rgba(239,68,68,0.15)";
+    scoreText = `AI: ${Math.round(score)}%`;
+  }
 
   badge.innerHTML = `
-    <span style="color: ${color}; font-weight: 600;">AI: ${Math.round(score)}%</span>
+    <span style="color: ${color}; font-weight: 600;">${scoreText}</span>
     <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
   `;
 
