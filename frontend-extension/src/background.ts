@@ -293,16 +293,14 @@ async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
 
       const data: DetectTextResponse = await response.json();
 
-      scores.push({
-        id: `text-${i}`,
-        type: "text" as const,
-        score: Math.round(data.score * 100),
-        preview: paragraph.slice(0, 100),
-        provider: data.provider,
-      });
-    } catch (err) {
-      console.warn(`[AI Shield BG] Failed to analyze paragraph ${i}:`, err);
-    }
+   scores.push({
+  id: `text-${i}`,
+  type: "text" as const,
+  score: Math.round(data.score * 100),
+  preview: paragraph.slice(0, 100),
+  provider: data.provider,
+  tier: data.tier ?? "unknown", // ✅ ADD THIS
+});
   }
 
   return scores;
@@ -327,16 +325,14 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
       if (!response.ok) continue;
 
       const data: DetectImageResponse = await response.json();
-      scores.push({
-        id: `img-${i}`,
-        type: "image",
-        score: Math.round(data.score * 100),
-        preview: images[i].slice(0, 80),
-        provider: data.provider,
-      });
-    } catch (err) {
-      console.warn("[AI Shield BG] Image analysis failed for image", i, err);
-    }
+     scores.push({
+  id: `img-${i}`,
+  type: "image",
+  score: Math.round(data.score * 100),
+  preview: images[i].slice(0, 80),
+  provider: data.provider,
+  tier: data.tier ?? "unknown", // ✅ ADD THIS
+});
   }
 
   return scores;
