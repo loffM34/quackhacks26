@@ -83,17 +83,6 @@ export interface PageExtraction {
 /** Message sent between content script ↔ background */
 export interface ExtensionMessage {
   type:
-<<<<<<< HEAD
-    | "EXTRACT_CONTENT"
-    | "ANALYSIS_RESULT"
-    | "ANALYZE_REQUEST"
-    | "GET_RESULT"
-    | "UPDATE_SETTINGS"
-    | "BLUR_CONTENT"
-    | "INJECT_DOTS"
-    | "OPEN_SIDE_PANEL"
-    | "EXTRACT_CONTENT_TRIGGER";
-=======
     | "EXTRACT_CONTENT" // content script → background: page content ready
     | "ANALYSIS_RESULT" // background → content script: scores ready
     | "ANALYZE_REQUEST" // popup/panel → background: user clicked Analyze
@@ -104,7 +93,6 @@ export interface ExtensionMessage {
     | "OPEN_SIDE_PANEL" // badge → background: open side panel
     | "EXTRACT_CONTENT_TRIGGER" // background → content script: trigger fresh extraction
     | "HIGHLIGHT_ITEM"; // sidepanel → content script: scroll to and highlight a content item
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
   payload?: any;
 }
 
