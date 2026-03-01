@@ -75,6 +75,8 @@ const EXCLUDE_SELECTORS = [
   '[role="tooltip"]',
   '[role="dialog"]',
   '[role="menu"]',
+  '[role="toolbar"]',
+  '[role="menubar"]',
   ".nav",
   ".navbar",
   ".sidebar",
@@ -106,75 +108,68 @@ function isExcluded(el: Element): boolean {
 }
 
 /**
- * Extract visible text from the current page.
- * Uses platform-specific selectors when available,
- * falls back to generic content containers.
+ * Extract visible text using innerText (browser handles visibility).
+ * Strategy: find the best content container, grab its innerText,
+ * split into paragraphs by blank lines. Much more robust than CSS selectors.
  */
 function extractVisibleText(): string[] {
-  const paragraphs: string[] = [];
-  const seen = new Set<string>();
-
-  // Check for Google Docs
+  // Google Docs has its own extractor
   if (window.location.hostname.includes("docs.google.com")) {
     return extractGoogleDocsText();
   }
 
-  // Platform-specific selectors
+  // Try platform-specific selectors first (returns multiple text blocks)
   const hostname = window.location.hostname;
-  let contentSelectors: string[] = [];
-
   for (const [domain, selectors] of Object.entries(PLATFORM_SELECTORS)) {
     if (hostname.includes(domain)) {
-      contentSelectors = selectors;
-      break;
+      const blocks = extractFromSelectors(selectors);
+      if (blocks.length > 0) return blocks;
     }
   }
 
-  // Fallback to generic content selectors
-  if (contentSelectors.length === 0) {
-    contentSelectors = [
-      "main p",
-      "article p",
-      '[role="main"] p',
-      ".post-content p",
-      ".article-body p",
-      ".entry-content p",
-      '[contenteditable="true"]',
-      "main div",
-      "article div",
-      "section p",
-    ];
-  }
+  // Find the best content container using innerText
+  const containerCandidates = [
+    "article",
+    "main",
+    '[role="main"]',
+    ".post-content",
+    ".article-body",
+    ".entry-content",
+    "#content",
+    ".content",
+    '[contenteditable="true"]',
+  ];
 
-  for (const selector of contentSelectors) {
-    const elements = document.querySelectorAll(selector);
-    for (const el of elements) {
-      if (paragraphs.length >= 20) break;
-      if (isExcluded(el)) continue;
-      if (!isInViewport(el)) continue;
+  for (const selector of containerCandidates) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
 
-      const text = cleanText(el.textContent || "");
-      if (text.length < 50) continue;
-
-      // Deduplicate
-      const hash = text.slice(0, 80);
-      if (seen.has(hash)) continue;
-      seen.add(hash);
-
-      paragraphs.push(text.slice(0, 2000));
+    const blocks = splitInnerText(el as HTMLElement);
+    if (blocks.length > 0) {
+      console.log(`[AI Shield] Extracted from container: ${selector}`);
+      return blocks;
     }
   }
 
-  // If we still have very few, try broader selectors (visible only)
-  if (paragraphs.length < 2) {
-    const broader = document.querySelectorAll("p, div, section, td");
-    for (const el of broader) {
+  // Last resort: use document.body but try to skip nav/header/footer
+  console.log("[AI Shield] Falling back to document.body");
+  return splitInnerText(document.body);
+}
+
+/**
+ * Extract text blocks from platform-specific selectors.
+ */
+function extractFromSelectors(selectors: string[]): string[] {
+  const paragraphs: string[] = [];
+  const seen = new Set<string>();
+
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
       if (paragraphs.length >= 20) break;
       if (isExcluded(el)) continue;
-      if (!isInViewport(el)) continue;
 
       const text = cleanText(el.textContent || "");
-      if (text.length < 100 || text.length > 3000) continue;
+      if (text.length < 20) continue;
 
       const hash = text.slice(0, 80);
       if (seen.has(hash)) continue;
@@ -187,49 +182,86 @@ function extractVisibleText(): string[] {
   return paragraphs;
 }
 
+/**
+ * Split an element's innerText into paragraph blocks.
+ * innerText respects visibility (display:none, aria-hidden, etc.)
+ * and produces text as the user sees it, with natural line breaks.
+ */
+function splitInnerText(el: HTMLElement): string[] {
+  const raw = el.innerText || "";
+  if (!raw.trim()) return [];
+
+  // Split on double newlines (paragraph boundaries)
+  const blocks = raw
+    .split(/\n{2,}/)
+    .map((b) => cleanText(b))
+    .filter((b) => b.length > 20);
+
+  // Deduplicate
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const block of blocks) {
+    const hash = block.slice(0, 80);
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    unique.push(block.slice(0, 2000));
+    if (unique.length >= 20) break;
+  }
+
+  return unique;
+}
+
 // ──────────────────────────────────────────────────────────
 // SECTION 2: Google Docs support
 // ──────────────────────────────────────────────────────────
 
 function extractGoogleDocsText(): string[] {
-  const paragraphs: string[] = [];
+  // Try multiple Google Docs content containers (covers classic + newer editors)
+  const editorSelectors = [
+    ".kix-appview-editor",
+    ".kix-paginateddocumentplugin",
+    '[contenteditable="true"]',
+    ".docs-editor-container",
+  ];
 
-  // Google Docs renders text in .kix-lineview-content spans
+  for (const selector of editorSelectors) {
+    const editor = document.querySelector(selector) as HTMLElement | null;
+    if (!editor) continue;
+
+    const blocks = splitInnerText(editor);
+    if (blocks.length > 0) {
+      console.log(`[AI Shield] Google Docs: extracted from ${selector}`);
+      return blocks;
+    }
+  }
+
+  // Fallback: try .kix-lineview-content spans (classic line-by-line)
   const lineViews = document.querySelectorAll(".kix-lineview-content");
+  if (lineViews.length > 0) {
+    const paragraphs: string[] = [];
+    let currentParagraph = "";
 
-  if (lineViews.length === 0) {
-    // Fallback: try the editor div directly
-    const editor = document.querySelector(".kix-appview-editor");
-    if (editor) {
-      const text = cleanText(editor.textContent || "");
-      if (text.length > 50) {
-        paragraphs.push(text.slice(0, 4000));
+    for (const lineView of lineViews) {
+      const lineText = cleanText(lineView.textContent || "");
+      if (!lineText) {
+        if (currentParagraph.length > 20) {
+          paragraphs.push(currentParagraph.slice(0, 2000));
+        }
+        currentParagraph = "";
+        continue;
       }
+      currentParagraph += (currentParagraph ? " " : "") + lineText;
     }
-    return paragraphs;
-  }
 
-  let currentParagraph = "";
-
-  for (const lineView of lineViews) {
-    const lineText = cleanText(lineView.textContent || "");
-    if (!lineText) {
-      // Empty line = paragraph break
-      if (currentParagraph.length > 50) {
-        paragraphs.push(currentParagraph.slice(0, 2000));
-      }
-      currentParagraph = "";
-      continue;
+    if (currentParagraph.length > 20) {
+      paragraphs.push(currentParagraph.slice(0, 2000));
     }
-    currentParagraph += (currentParagraph ? " " : "") + lineText;
+
+    if (paragraphs.length > 0) return paragraphs;
   }
 
-  // Push final paragraph
-  if (currentParagraph.length > 50) {
-    paragraphs.push(currentParagraph.slice(0, 2000));
-  }
-
-  return paragraphs;
+  console.log("[AI Shield] Google Docs: no content found");
+  return [];
 }
 
 // ──────────────────────────────────────────────────────────
@@ -657,9 +689,12 @@ async function runAnalysis(): Promise<void> {
   isAnalyzing = true;
   injectFloatingBadge(null); // Show "Scanning..."
 
-  // Extract visible text
-  const paragraphs = extractVisibleText();
-  console.log(`[AI Shield] Extracted ${paragraphs.length} paragraphs`);
+  // Extract visible text, then aggregate small pieces into 60+ word chunks
+  const rawParagraphs = extractVisibleText();
+  const paragraphs = aggregateToMinWords(rawParagraphs, 60);
+  console.log(
+    `[AI Shield] Extracted ${rawParagraphs.length} raw blocks → ${paragraphs.length} chunks (60+ words)`,
+  );
 
   if (paragraphs.length === 0) {
     isAnalyzing = false;
@@ -667,7 +702,7 @@ async function runAnalysis(): Promise<void> {
     const badge = badgeElement; // re-read after injectFloatingBadge sets it
     if (badge) {
       badge.innerHTML = `
-        <span style="color: #94a3b8; font-weight: 600;">AI: N/A</span>
+        <span style="color: #94a3b8; font-weight: 600;">No text (60+ words needed)</span>
         <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
       `;
     }
@@ -728,10 +763,11 @@ function handleAnalysisResult(analysis: PageAnalysis): void {
 }
 
 // ──────────────────────────────────────────────────────────
-// SECTION 8: SPA handling — MutationObserver
+// SECTION 8: SPA handling — history hooks + MutationObserver
 // ──────────────────────────────────────────────────────────
 
 let lastUrl = location.href;
+let navigationDebounce: ReturnType<typeof setTimeout> | null = null;
 
 function reinitialize(): void {
   console.log("[AI Shield] SPA navigation detected, reinitializing...");
@@ -748,10 +784,38 @@ function reinitialize(): void {
   injectFloatingBadge(null);
 }
 
+function handleNavigation(): void {
+  if (location.href === lastUrl) return;
+  lastUrl = location.href;
+
+  // Debounce — wait for the page to settle before scanning
+  if (navigationDebounce) clearTimeout(navigationDebounce);
+  navigationDebounce = setTimeout(() => {
+    reinitialize();
+    runAnalysis();
+  }, 800);
+}
+
+// Hook history.pushState / replaceState for SPA navigation detection
+const originalPushState = history.pushState.bind(history);
+const originalReplaceState = history.replaceState.bind(history);
+
+history.pushState = function (...args: Parameters<typeof history.pushState>) {
+  originalPushState(...args);
+  handleNavigation();
+};
+
+history.replaceState = function (...args: Parameters<typeof history.replaceState>) {
+  originalReplaceState(...args);
+  handleNavigation();
+};
+
+window.addEventListener("popstate", () => handleNavigation());
+
+// MutationObserver as fallback (catches navigations the hooks miss)
 const observer = new MutationObserver(() => {
   if (location.href !== lastUrl) {
-    lastUrl = location.href;
-    reinitialize();
+    handleNavigation();
   }
 });
 
@@ -858,6 +922,44 @@ function loadSettings(): Promise<ShieldSettings> {
 
 function cleanText(raw: string): string {
   return raw.replace(/\s+/g, " ").replace(/\n+/g, " ").trim();
+}
+
+function countWords(text: string): number {
+  return text.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+/**
+ * Aggregate small paragraphs into chunks of at least `minWords` words.
+ * Short pieces (tweets, short paragraphs) get combined until they meet the threshold.
+ */
+function aggregateToMinWords(paragraphs: string[], minWords: number): string[] {
+  const result: string[] = [];
+  let buffer = "";
+
+  for (const p of paragraphs) {
+    if (countWords(p) >= minWords) {
+      // This paragraph is big enough on its own
+      if (buffer && countWords(buffer) >= minWords) {
+        result.push(buffer.slice(0, 2000));
+      }
+      buffer = "";
+      result.push(p.slice(0, 2000));
+    } else {
+      // Accumulate small paragraphs together
+      buffer += (buffer ? " " : "") + p;
+      if (countWords(buffer) >= minWords) {
+        result.push(buffer.slice(0, 2000));
+        buffer = "";
+      }
+    }
+  }
+
+  // Keep remaining buffer only if it meets the threshold
+  if (countWords(buffer) >= minWords) {
+    result.push(buffer.slice(0, 2000));
+  }
+
+  return result;
 }
 
 // Inject styles immediately
