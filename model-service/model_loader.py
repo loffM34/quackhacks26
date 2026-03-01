@@ -102,6 +102,14 @@ class TextDetector:
 
         return {"ai_prob": ai_prob, "human_prob": human_prob, "pred": pred}
 
+    def predict_batch(self, texts: list[str], threshold: float = 0.85) -> list[float]:
+        """
+        Predict AI probability for a batch of texts.
+
+        Returns:
+            List of ai_prob scores (one per text).
+        """
+        return [self.predict(text, threshold)["ai_prob"] for text in texts]
 
 class ImageDetector:
     """
