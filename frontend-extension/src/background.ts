@@ -14,7 +14,7 @@ import type {
   DetectImageResponse,
   ContentScore,
   ShieldSettings,
-  DEFAULT_SETTINGS,
+  FlagTier,
 } from "./types";
 
 // ── In-memory session cache (survives across tabs, cleared on SW restart) ──
@@ -115,11 +115,13 @@ async function handleExtraction(
   const overallScore =
     allItems.length > 0 ? average(allItems.map((s) => s.score)) : 0;
 
-  // Calculate AI density — % of paragraphs scoring above 50%
-  const flaggedCount = textScores.filter((s) => s.score > 50).length;
+  // Calculate AI density — % of items flagged as medium/high
+  const flaggedCount = allItems.filter(
+    (s) => s.tier === "medium" || s.tier === "high",
+  ).length;
   const aiDensity =
-    textScores.length > 0
-      ? Math.round((flaggedCount / textScores.length) * 100)
+    allItems.length > 0
+      ? Math.round((flaggedCount / allItems.length) * 100)
       : 0;
 
   const analysis: PageAnalysis = {
@@ -294,17 +296,25 @@ async function analyzeContainers(
       }
 
       const data: DetectTextResponse = await response.json();
+      const score = Math.round(data.score * 100);
+      const tier: FlagTier =
+        score <= 40 ? "low" : score <= 70 ? "medium" : "high";
 
       scores.push({
         id: container.id,
-        type: "text" as const,
-        score: Math.round(data.score * 100),
+        type: "text",
+        score,
+        tier,
         preview: text.slice(0, 100),
         provider: data.provider,
         flaggedRanges: data.flaggedRanges,
+        explanation: (data as any).explanation ?? null,
       });
     } catch (err) {
-      console.warn(`[AI Shield BG] Failed to analyze paragraph ${i}:`, err);
+      console.warn(
+        `[AI Shield BG] Failed to analyze container ${container.id}:`,
+        err,
+      );
     }
   }
 
@@ -330,12 +340,18 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
       if (!response.ok) continue;
 
       const data: DetectImageResponse = await response.json();
+      const score = Math.round(data.score * 100);
+      const tier: FlagTier =
+        score <= 40 ? "low" : score <= 70 ? "medium" : "high";
+
       scores.push({
         id: `img-${i}`,
         type: "image",
-        score: Math.round(data.score * 100),
+        score,
+        tier,
         preview: images[i].slice(0, 80),
         provider: data.provider,
+        explanation: (data as any).explanation ?? null,
       });
     } catch (err) {
       console.warn("[AI Shield BG] Image analysis failed for image", i, err);
