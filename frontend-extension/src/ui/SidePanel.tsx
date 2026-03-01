@@ -34,11 +34,11 @@ export const SidePanel: React.FC = () => {
     });
 
     getCachedResult().then((result) => {
-      if (result) {
+      if (result && result.items?.length > 0) {
         setAnalysis(result);
       } else {
-        // No cached result — service worker likely restarted and lost session storage.
-        // Trigger a fresh scan automatically so the user sees results immediately.
+        // No valid cached result (null or empty items from a stale/failed scan).
+        // Trigger a fresh scan so the panel shows real scores immediately.
         setLoading(true);
         requestAnalysis().then((fresh) => {
           if (fresh) setAnalysis(fresh);
