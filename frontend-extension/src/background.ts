@@ -167,44 +167,40 @@ async function handleManualAnalysis(
   if (!tabId) return null;
 
   return new Promise((resolve) => {
-    chrome.tabs.sendMessage(
-      tabId,
-      { type: "EXTRACT_CONTENT_TRIGGER" },
-      () => {
-        if (chrome.runtime.lastError) {
-          console.warn(
-            "[AI Shield BG] Manual analysis trigger failed:",
-            chrome.runtime.lastError.message,
-          );
-          resolve(null);
-          return;
-        }
+    chrome.tabs.sendMessage(tabId, { type: "EXTRACT_CONTENT_TRIGGER" }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn(
+          "[AI Shield BG] Manual analysis trigger failed:",
+          chrome.runtime.lastError.message,
+        );
+        resolve(null);
+        return;
+      }
 
-        const pollKey = `tab_${tabId}`;
-        let attempts = 0;
-        const maxAttempts = 20;
+      const pollKey = `tab_${tabId}`;
+      let attempts = 0;
+      const maxAttempts = 20;
 
-        const poll = setInterval(async () => {
-          attempts += 1;
+      const poll = setInterval(async () => {
+        attempts += 1;
 
-          try {
-            const stored = await chrome.storage.session.get(pollKey);
-            const result = stored[pollKey] as PageAnalysis | undefined;
+        try {
+          const stored = await chrome.storage.session.get(pollKey);
+          const result = stored[pollKey] as PageAnalysis | undefined;
 
-            if (result && Date.now() - result.analyzedAt < 15000) {
-              clearInterval(poll);
-              resolve(result);
-            } else if (attempts >= maxAttempts) {
-              clearInterval(poll);
-              resolve(null);
-            }
-          } catch {
+          if (result && Date.now() - result.analyzedAt < 15000) {
+            clearInterval(poll);
+            resolve(result);
+          } else if (attempts >= maxAttempts) {
             clearInterval(poll);
             resolve(null);
           }
-        }, 500);
-      },
-    );
+        } catch {
+          clearInterval(poll);
+          resolve(null);
+        }
+      }, 500);
+    });
   });
 }
 
@@ -310,7 +306,43 @@ async function analyzeContainers(
 async function analyzeImages(images: string[]): Promise<ContentScore[]> {
   if (!images || images.length === 0) return [];
 
-  const payload: ImageInput[] = images.slice(0, 12).map((image, index) => ({
+  // Resolve url: prefixed entries by fetching them (CORS fallback from content script)
+  const resolvedImages: string[] = [];
+  for (const img of images.slice(0, 12)) {
+    if (img.startsWith("url:")) {
+      const url = img.slice(4);
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          console.warn(
+            `[AI Shield BG] Failed to fetch image: ${resp.status} ${url.slice(0, 80)}`,
+          );
+          continue;
+        }
+        const blob = await resp.blob();
+        const buffer = await blob.arrayBuffer();
+        const base64 = btoa(
+          new Uint8Array(buffer).reduce(
+            (s, b) => s + String.fromCharCode(b),
+            "",
+          ),
+        );
+        const mimeType = blob.type || "image/jpeg";
+        resolvedImages.push(`data:${mimeType};base64,${base64}`);
+      } catch (err) {
+        console.warn(
+          `[AI Shield BG] Image fetch error: ${url.slice(0, 80)}`,
+          err,
+        );
+      }
+    } else {
+      resolvedImages.push(img);
+    }
+  }
+
+  if (resolvedImages.length === 0) return [];
+
+  const payload: ImageInput[] = resolvedImages.map((image, index) => ({
     id: `img_${index + 1}`,
     image,
   }));
@@ -336,8 +368,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
       id: result.id,
       type: "image",
       score: normalizeBackendScore(result.score),
-      tier:
-        result.tier || tierFromPercent(normalizeBackendScore(result.score)),
+      tier: result.tier || tierFromPercent(normalizeBackendScore(result.score)),
       preview: result.id,
       provider: data.provider || "python-model",
       explanation: result.explanation ?? null,
@@ -393,8 +424,7 @@ function updateActionBadge(tabId: number, score: number): void {
   });
 
   chrome.action.setBadgeBackgroundColor({
-    color:
-      score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444",
+    color: score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444",
     tabId,
   });
 }

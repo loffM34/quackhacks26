@@ -496,18 +496,30 @@ async function extractImages(): Promise<string[]> {
   let imgIndex = 0;
 
   for (const img of candidates.slice(0, MAX_IMAGES)) {
+    const src = img.currentSrc || img.src || "";
+    imgIndex++;
+    scannedImageSrcs.add(src);
+    blockElements.set(`img_${imgIndex}`, img);
+
     try {
       const b64 = await compressImage(img);
       if (b64) {
-        imgIndex++;
-        const src = img.currentSrc || img.src;
-        scannedImageSrcs.add(src);
-        // Register with the same ID the background will assign (img_1, img_2, ...)
-        blockElements.set(`img_${imgIndex}`, img);
         results.push(b64);
+        continue;
       }
     } catch {
-      // Skip images that fail to draw (CORS, etc.)
+      // Canvas tainted by CORS — fall through to URL fallback
+    }
+
+    // Fallback: send the URL so the background (with full network access) can fetch it
+    if (src && !src.startsWith("data:")) {
+      results.push(`url:${src}`);
+      dbg(
+        `Image ${imgIndex} CORS-blocked, sending URL fallback: ${src.slice(0, 80)}...`,
+      );
+    } else {
+      imgIndex--; // undo increment if we can't use this image at all
+      blockElements.delete(`img_${imgIndex + 1}`);
     }
   }
 
