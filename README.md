@@ -1,13 +1,33 @@
 # AI Content Shield
 
-**A Chrome extension that detects AI-generated text and images on any webpage.**
+**Team Flare** — Michael Dox, Michael Loff, Sarah Simbulan, Leonard Weber
 
-Passively scores pages using a floating badge, highlights flagged content, and optionally blurs high-confidence AI blocks. Powered by a self-hosted DistilBERT classifier with optional API provider fallbacks.
+**A Chrome extension that detects AI-generated text and images on any webpage.**
 
 ![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-blue)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![Express](https://img.shields.io/badge/Express-4-000)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688)
+
+---
+
+## The Problem
+
+AI-generated content is everywhere — articles, social media posts, product reviews, academic submissions — and it's increasingly difficult to tell apart from human writing. Most people have no way to know whether what they're reading was written by a person or a machine. Existing detection tools require you to copy-paste text into a separate website, which is slow, disruptive, and impractical for casual browsing.
+
+## What AI Content Shield Does
+
+AI Content Shield runs directly in your browser as a Chrome extension. It **passively analyzes every page you visit**, scoring text blocks and images for AI-generation probability. A small floating badge shows the overall score at a glance. For deeper inspection, a side panel breaks down every detected block with individual scores, confidence tiers, and explanations. Flagged content can be automatically blurred until you choose to reveal it.
+
+It's designed to be **non-intrusive** — you install it once and it works silently in the background. No copy-pasting, no switching tabs, no manual effort.
+
+## Built With
+
+- **Frontend**: TypeScript, React 18, Vite, Tailwind CSS, Chrome Manifest V3 APIs
+- **Backend Gateway**: Node.js, Express 4, Helmet, LRU Cache
+- **Model Service**: Python, FastAPI, PyTorch, HuggingFace Transformers
+- **ML Model**: DistilBERT fine-tuned on HC3 dataset (ChatGPT vs human answers), trained in Google Colab
+- **CI/CD**: GitHub Actions, Docker, Render
 
 ---
 
