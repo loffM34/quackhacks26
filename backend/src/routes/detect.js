@@ -14,7 +14,6 @@ import { logger } from "../index.js";
 
 export const detectRouter = Router();
 
-
 // ──────────────────────────────────────────────────────────
 // Per-IP rate limiter — 5 requests per 10 seconds
 // ──────────────────────────────────────────────────────────
@@ -45,10 +44,10 @@ setInterval(() => {
   }
 }, 30_000);
 
-// ──────────────────────────────────────────────────────────
-// POST /detect/text
-// ──────────────────────────────────────────────────────────
-
+/**
+ * POST /detect/text
+ * Body: { text: string }
+ */
 detectRouter.post("/text", async (req, res) => {
   const start = Date.now();
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
@@ -66,7 +65,6 @@ detectRouter.post("/text", async (req, res) => {
   try {
     const { text } = req.body;
 
-
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: 'Missing or invalid "text" field' });
     }
@@ -76,7 +74,7 @@ detectRouter.post("/text", async (req, res) => {
       .replace(/\s+/g, " ")
       .replace(/\n+/g, " ")
       .trim()
-      .slice(0, config.maxInputLength);
+      .slice(0, config.maxTextLength || config.maxInputLength);
 
     if (sanitized.length < 20) {
       return res.json({
@@ -97,7 +95,6 @@ detectRouter.post("/text", async (req, res) => {
       return res.json({ ...cached, cached: true });
     }
 
-
     // Call detection
     const result = await detectService.analyzeText(sanitized);
 
@@ -109,7 +106,7 @@ detectRouter.post("/text", async (req, res) => {
         type: "text",
         score: result.score,
         provider: result.provider,
-        chars: sanitized.length,
+        textHash: cacheKey.slice(0, 20),
         latencyMs: Date.now() - start,
       },
       "Detection result",
@@ -120,22 +117,14 @@ detectRouter.post("/text", async (req, res) => {
   } catch (err) {
     logger.error(err, "Error in /detect/text");
     trackLatency("text", Date.now() - start, false);
-    // Never crash — return fallback
-    return res.json({
-      score: 0,
-      provider: "fallback",
-      reason: "server_error",
-      error: err.message,
-      cached: false,
-    });
+    return res.status(500).json({ error: "Detection failed" });
   }
 });
 
-
-// ──────────────────────────────────────────────────────────
-// POST /detect/image
-// ──────────────────────────────────────────────────────────
-
+/**
+ * POST /detect/image
+ * Body: { image: string }
+ */
 detectRouter.post("/image", async (req, res) => {
   const start = Date.now();
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
@@ -152,7 +141,9 @@ detectRouter.post("/image", async (req, res) => {
     const { image } = req.body;
 
     if (!image || typeof image !== "string") {
-      return res.status(400).json({ error: 'Missing or invalid "image" field' });
+      return res
+        .status(400)
+        .json({ error: 'Missing or invalid "image" field' });
     }
 
     if (image.length > config.maxImageSizeBytes * 1.37) {
@@ -163,6 +154,7 @@ detectRouter.post("/image", async (req, res) => {
     const cached = cache.get(cacheKey);
 
     if (cached) {
+      logger.info({ cacheKey: cacheKey.slice(0, 20) }, "Cache hit (image)");
       trackLatency("image", Date.now() - start, true);
       return res.json({ ...cached, cached: true });
     }
@@ -185,13 +177,7 @@ detectRouter.post("/image", async (req, res) => {
   } catch (err) {
     logger.error(err, "Error in /detect/image");
     trackLatency("image", Date.now() - start, false);
-    return res.json({
-      score: 0,
-      provider: "fallback",
-      reason: "image_error",
-      error: err.message,
-      cached: false,
-    });
+    return res.status(500).json({ error: "Detection failed" });
   }
 });
 
@@ -206,16 +192,25 @@ detectRouter.post("/text/spans", async (req, res) => {
     const { chunks } = req.body;
 
     if (!Array.isArray(chunks) || chunks.length === 0) {
-      return res.status(400).json({ error: 'Missing or invalid "chunks" array' });
+      return res
+        .status(400)
+        .json({ error: 'Missing or invalid "chunks" array' });
     }
 
     const normalizedChunks = chunks
-      .filter((chunk) => chunk && typeof chunk.id === "string" && typeof chunk.text === "string")
+      .filter(
+        (chunk) =>
+          chunk &&
+          typeof chunk.id === "string" &&
+          typeof chunk.text === "string",
+      )
       .map((chunk) => ({
         id: chunk.id,
         text: chunk.text.slice(0, config.maxTextLength),
         kind: typeof chunk.kind === "string" ? chunk.kind : "sentence",
-        start_char: Number.isInteger(chunk.start_char) ? chunk.start_char : undefined,
+        start_char: Number.isInteger(chunk.start_char)
+          ? chunk.start_char
+          : undefined,
         end_char: Number.isInteger(chunk.end_char) ? chunk.end_char : undefined,
       }));
 
@@ -229,7 +224,10 @@ detectRouter.post("/text/spans", async (req, res) => {
     const cached = cache.get(cacheKey);
 
     if (cached) {
-      logger.info({ cacheKey: cacheKey.slice(0, 20) }, "Cache hit (text/spans)");
+      logger.info(
+        { cacheKey: cacheKey.slice(0, 20) },
+        "Cache hit (text/spans)",
+      );
       trackLatency("text_spans", Date.now() - start, true);
       return res.json({ ...cached, cached: true });
     }
@@ -269,11 +267,16 @@ detectRouter.post("/image/batch", async (req, res) => {
     const { images } = req.body;
 
     if (!Array.isArray(images) || images.length === 0) {
-      return res.status(400).json({ error: 'Missing or invalid "images" array' });
+      return res
+        .status(400)
+        .json({ error: 'Missing or invalid "images" array' });
     }
 
     const normalizedImages = images
-      .filter((item) => item && typeof item.id === "string" && typeof item.image === "string")
+      .filter(
+        (item) =>
+          item && typeof item.id === "string" && typeof item.image === "string",
+      )
       .map((item) => ({
         id: item.id,
         image: item.image,
@@ -292,12 +295,17 @@ detectRouter.post("/image/batch", async (req, res) => {
     }
 
     const cacheKey = `imgbatch:${hashContent(
-      JSON.stringify(normalizedImages.map((img) => [img.id, img.image.slice(0, 500)])),
+      JSON.stringify(
+        normalizedImages.map((img) => [img.id, img.image.slice(0, 500)]),
+      ),
     )}`;
     const cached = cache.get(cacheKey);
 
     if (cached) {
-      logger.info({ cacheKey: cacheKey.slice(0, 20) }, "Cache hit (image/batch)");
+      logger.info(
+        { cacheKey: cacheKey.slice(0, 20) },
+        "Cache hit (image/batch)",
+      );
       trackLatency("image_batch", Date.now() - start, true);
       return res.json({ ...cached, cached: true });
     }
@@ -336,24 +344,40 @@ detectRouter.post("/page", async (req, res) => {
     const { chunks = [], images = [] } = req.body ?? {};
 
     if (!Array.isArray(chunks) && !Array.isArray(images)) {
-      return res.status(400).json({ error: 'Body must include "chunks" and/or "images"' });
+      return res
+        .status(400)
+        .json({ error: 'Body must include "chunks" and/or "images"' });
     }
 
     const normalizedChunks = Array.isArray(chunks)
       ? chunks
-          .filter((chunk) => chunk && typeof chunk.id === "string" && typeof chunk.text === "string")
+          .filter(
+            (chunk) =>
+              chunk &&
+              typeof chunk.id === "string" &&
+              typeof chunk.text === "string",
+          )
           .map((chunk) => ({
             id: chunk.id,
             text: chunk.text.slice(0, config.maxTextLength),
             kind: typeof chunk.kind === "string" ? chunk.kind : "sentence",
-            start_char: Number.isInteger(chunk.start_char) ? chunk.start_char : undefined,
-            end_char: Number.isInteger(chunk.end_char) ? chunk.end_char : undefined,
+            start_char: Number.isInteger(chunk.start_char)
+              ? chunk.start_char
+              : undefined,
+            end_char: Number.isInteger(chunk.end_char)
+              ? chunk.end_char
+              : undefined,
           }))
       : [];
 
     const normalizedImages = Array.isArray(images)
       ? images
-          .filter((item) => item && typeof item.id === "string" && typeof item.image === "string")
+          .filter(
+            (item) =>
+              item &&
+              typeof item.id === "string" &&
+              typeof item.image === "string",
+          )
           .map((item) => ({
             id: item.id,
             image: item.image,
@@ -361,7 +385,9 @@ detectRouter.post("/page", async (req, res) => {
       : [];
 
     if (normalizedChunks.length === 0 && normalizedImages.length === 0) {
-      return res.status(400).json({ error: "No valid chunks or images provided" });
+      return res
+        .status(400)
+        .json({ error: "No valid chunks or images provided" });
     }
 
     for (const item of normalizedImages) {
