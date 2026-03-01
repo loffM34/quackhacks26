@@ -14,12 +14,7 @@ import { logger } from "../index.js";
 
 export const detectRouter = Router();
 
-<<<<<<< HEAD
-/**
- * POST /detect/text
- * Body: { text: string, url?: string }
- */
-=======
+
 // ──────────────────────────────────────────────────────────
 // Per-IP rate limiter — 5 requests per 10 seconds
 // ──────────────────────────────────────────────────────────
@@ -54,7 +49,6 @@ setInterval(() => {
 // POST /detect/text
 // ──────────────────────────────────────────────────────────
 
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 detectRouter.post("/text", async (req, res) => {
   const start = Date.now();
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
@@ -72,18 +66,11 @@ detectRouter.post("/text", async (req, res) => {
   try {
     const { text } = req.body;
 
-<<<<<<< HEAD
-=======
-    // Validate
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
+
     if (!text || typeof text !== "string") {
       return res.status(400).json({ error: 'Missing or invalid "text" field' });
     }
 
-<<<<<<< HEAD
-    const truncated = text.slice(0, config.maxTextLength);
-    const cacheKey = `text:${hashContent(truncated)}`;
-=======
     // Sanitize: collapse whitespace, enforce max length
     const sanitized = text
       .replace(/\s+/g, " ")
@@ -102,7 +89,6 @@ detectRouter.post("/text", async (req, res) => {
 
     // Check cache
     const cacheKey = `text:${hashContent(sanitized)}`;
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
     const cached = cache.get(cacheKey);
 
     if (cached) {
@@ -111,14 +97,11 @@ detectRouter.post("/text", async (req, res) => {
       return res.json({ ...cached, cached: true });
     }
 
-<<<<<<< HEAD
-    const result = await detectService.analyzeText(truncated);
-=======
+
     // Call detection
     const result = await detectService.analyzeText(sanitized);
 
     // Cache result
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
     cache.set(cacheKey, result);
 
     logger.info(
@@ -148,17 +131,11 @@ detectRouter.post("/text", async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-/**
- * POST /detect/image
- * Body: { image: string }
- */
-=======
+
 // ──────────────────────────────────────────────────────────
 // POST /detect/image
 // ──────────────────────────────────────────────────────────
 
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 detectRouter.post("/image", async (req, res) => {
   const start = Date.now();
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
