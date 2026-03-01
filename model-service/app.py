@@ -1,35 +1,36 @@
 """
 AI Content Shield — FastAPI Model Microservice
 ================================================
-Template for hosting self-hosted HuggingFace / PyTorch models
-for AI-generated content detection.
+Serves the fine-tuned DistilBERT classifier for AI text detection.
 
 Endpoints:
   POST /infer/text   — text AI detection
-  POST /infer/image  — image AI detection
+  POST /infer/image  — not supported, returns neutral score
   GET  /health       — service status
 
-For hackathon MVP: returns dummy scores.
-For production: load real models via model_loader.py.
+Run:
+  uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 """
+
+from __future__ import annotations
+
+import time
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-import time
-import hashlib
 
-# ── Import model loader (uncomment when real models are ready) ──
-# from model_loader import TextDetector, ImageDetector
+from model_loader import TextDetector
+
+# ── App ──
 
 app = FastAPI(
     title="AI Content Shield — Model Service",
-    version="0.1.0",
-    description="Self-hosted AI content detection using HuggingFace/PyTorch models",
+    version="2.0.0",
+    description="AI text detection using a fine-tuned DistilBERT model (HC3 + RAID)",
 )
 
-# ── CORS (allow backend gateway) ──
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3001", "*"],
@@ -37,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Request/Response models ──
+# ── Request/Response schemas ──
 
 class TextRequest(BaseModel):
     text: str
@@ -46,111 +47,86 @@ class ImageRequest(BaseModel):
     image: str  # base64 data URI
 
 class DetectionResponse(BaseModel):
-    score: float  # 0.0 – 1.0 probability of AI-generated
+    score: float          # 0.0 – 1.0 probability of AI-generated
     provider: str
     details: Optional[dict] = None
     latency_ms: int
 
 
-# ── Model instances (initialized on startup) ──
-# Uncomment these when real models are ready:
-# text_detector: TextDetector = None
-# image_detector: ImageDetector = None
+# ── Startup: load model once so first request is fast ──
 
+detector = None
 
 @app.on_event("startup")
-async def startup():
-    """Load models on server startup."""
-    # TODO: Uncomment when real models are deployed
-    # global text_detector, image_detector
-    # text_detector = TextDetector()
-    # image_detector = ImageDetector()
-    print("🧠 Model service started (using dummy scores for MVP)")
+async def startup() -> None:
+    global detector
+    try:
+        detector = TextDetector()
+        # Warm up so the first real request isn't slow
+        detector.predict("warmup")
+        print("Model loaded and ready.")
+    except Exception as e:
+        print(f"Model failed to load: {e}")
+        print("Make sure model files are in model-service/model/")
 
 
-# ──────────────────────────────────────────────────────────
-# Text Detection
-# ──────────────────────────────────────────────────────────
+# ── Text Detection ──
 
 @app.post("/infer/text", response_model=DetectionResponse)
-async def infer_text(req: TextRequest):
+async def infer_text(req: TextRequest) -> DetectionResponse:
     """
     Analyze text for AI-generated content.
-    
-    MVP: Returns a deterministic dummy score based on text hash.
-    Production: Use text_detector.predict(req.text)
+    Returns a score from 0.0 (human) to 1.0 (AI).
     """
-    start = time.time()
-    
     if not req.text or len(req.text.strip()) < 10:
         raise HTTPException(status_code=400, detail="Text too short for analysis")
-    
-    # ── Dummy scoring for MVP ──
-    # Replace with: score = text_detector.predict(req.text)
-    text_hash = int(hashlib.md5(req.text.encode()).hexdigest()[:8], 16)
-    score = (text_hash % 80 + 10) / 100  # 0.10 – 0.90
-    
+
+    if detector is None:
+        raise HTTPException(status_code=503, detail="Model not loaded. Check model-service/model/ directory.")
+
+    start = time.time()
+
+    try:
+        result = detector.predict(req.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scoring error: {e}")
+
     latency_ms = int((time.time() - start) * 1000)
-    
+
     return DetectionResponse(
-        score=score,
-        provider="python-model",
+        score=result["ai_prob"],
+        provider="distilbert-hc3-raid",
         details={
-            "model": "dummy-mvp",
+            "human_prob": result["human_prob"],
+            "prediction": result["pred"],
             "text_length": len(req.text),
-            "note": "Replace with real model for production",
         },
         latency_ms=latency_ms,
     )
 
 
-# ──────────────────────────────────────────────────────────
-# Image Detection
-# ──────────────────────────────────────────────────────────
+# ── Image Detection (not supported) ──
 
 @app.post("/infer/image", response_model=DetectionResponse)
-async def infer_image(req: ImageRequest):
-    """
-    Analyze an image for AI-generated content.
-    
-    MVP: Returns a random dummy score.
-    Production: Use image_detector.predict(req.image)
-    """
-    start = time.time()
-    
+async def infer_image(req: ImageRequest) -> DetectionResponse:
     if not req.image:
         raise HTTPException(status_code=400, detail="No image provided")
-    
-    # ── Dummy scoring for MVP ──
-    # Replace with: score = image_detector.predict(req.image)
-    img_hash = int(hashlib.md5(req.image[:200].encode()).hexdigest()[:8], 16)
-    score = (img_hash % 70 + 15) / 100  # 0.15 – 0.85
-    
-    latency_ms = int((time.time() - start) * 1000)
-    
+
     return DetectionResponse(
-        score=score,
-        provider="python-model",
-        details={
-            "model": "dummy-mvp",
-            "note": "Replace with real model for production",
-        },
-        latency_ms=latency_ms,
+        score=0.5,
+        provider="distilbert-hc3-raid",
+        details={"note": "Image detection not supported — text-only model"},
+        latency_ms=0,
     )
 
 
-# ──────────────────────────────────────────────────────────
-# Health
-# ──────────────────────────────────────────────────────────
+# ── Health ──
 
 @app.get("/health")
-async def health():
+async def health() -> dict:
     return {
         "status": "ok",
         "service": "model-service",
-        "models_loaded": False,  # Set to True when real models are loaded
-        "note": "MVP mode — using dummy scores",
+        "model": "distilbert-hc3-raid",
+        "model_loaded": detector is not None,
     }
-
-
-# ── Run with: uvicorn app:app --host 0.0.0.0 --port 8000 --reload ──
