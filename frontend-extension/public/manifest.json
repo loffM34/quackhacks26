@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Content Shield",
+  "name": "Flare",
   "version": "0.1.0",
-  "description": "Detect and minimize exposure to AI-generated content. Shows probabilistic AI scores with a non-intrusive floating badge.",
+  "description": "Flare highlights AI-generated content so you always know what's real. Probabilistic AI scores with a non-intrusive floating badge.",
   "permissions": ["activeTab", "storage", "scripting", "sidePanel"],
   "host_permissions": [
     "<all_urls>",

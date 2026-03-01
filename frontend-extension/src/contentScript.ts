@@ -124,7 +124,7 @@ const scannedImageSrcs = new Set<string>();
 // ──────────────────────────────────────────────────────────
 
 function dbg(msg: string, ...args: unknown[]): void {
-  if (DEBUG) console.log(`[AI Shield] ${msg}`, ...args);
+  if (DEBUG) console.log(`[Flare] ${msg}`, ...args);
 }
 
 function cleanText(raw: string): string {
@@ -181,7 +181,7 @@ async function loadSettings(): Promise<ShieldSettings> {
     const result = await chrome.storage.local.get("settings");
     return { ...defaults, ...(result.settings || {}) };
   } catch (err) {
-    console.warn("[AI Shield] Settings load error:", err);
+    console.warn("[Flare] Settings load error:", err);
     return defaults;
   }
 }
@@ -597,7 +597,7 @@ async function runScan(): Promise<void> {
   // ── DEBUG: log what's being sent ──
   if (DEBUG) {
     console.groupCollapsed(
-      `[AI Shield] Sending ${containers.length} blocks to backend`,
+      `[Flare] Sending ${containers.length} blocks to backend`,
     );
     containers.forEach((c, i) => {
       const words = c.text.split(/\s+/).filter(Boolean).length;
@@ -660,7 +660,7 @@ async function runScan(): Promise<void> {
   // ── DEBUG: log score breakdown + color-code blocks ──
   if (DEBUG) {
     console.groupCollapsed(
-      `[AI Shield] Scores (overall: ${response.overallScore}%)`,
+      `[Flare] Scores (overall: ${response.overallScore}%)`,
     );
     const rows = response.items.map((item) => {
       const score = Math.round(item.score);
@@ -784,14 +784,14 @@ function highlightItem(itemId: string, preview?: string): void {
 // ──────────────────────────────────────────────────────────
 
 function ensureBadge(): void {
-  if (document.getElementById("ai-shield-badge")) {
-    badgeEl = document.getElementById("ai-shield-badge");
+  if (document.getElementById("flare-badge")) {
+    badgeEl = document.getElementById("flare-badge");
     return;
   }
   if (!document.body) return;
 
   const badge = document.createElement("div");
-  badge.id = "ai-shield-badge";
+  badge.id = "flare-badge";
   Object.assign(badge.style, {
     position: "fixed",
     bottom: "20px",
@@ -800,17 +800,17 @@ function ensureBadge(): void {
     padding: "8px 14px",
     borderRadius: "24px",
     background:
-      "linear-gradient(135deg, rgba(10,26,74,0.85), rgba(44,79,153,0.75))",
+      "linear-gradient(135deg, rgba(15,23,42,0.9), rgba(30,58,138,0.8))",
     backdropFilter: "blur(16px)",
     WebkitBackdropFilter: "blur(16px)",
-    border: "1px solid rgba(148,163,184,0.2)",
-    boxShadow: "0 4px 16px rgba(10,26,74,0.4)",
+    border: "1px solid rgba(96,165,250,0.3)",
+    boxShadow: "0 4px 20px rgba(37,99,235,0.3), 0 0 8px rgba(96,165,250,0.15)",
     color: "#e2e8f0",
     fontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     fontSize: "13px",
     cursor: "pointer",
-    transition: "transform 0.2s ease",
+    transition: "transform 0.2s ease, box-shadow 0.2s ease",
     userSelect: "none",
     display: "flex",
     alignItems: "center",
@@ -832,8 +832,8 @@ function ensureBadge(): void {
 
 function updateBadgeEl(badge: HTMLElement, text: string, color: string): void {
   badge.innerHTML = `
+    <span style="font-size:14px;margin-right:2px;">🔥</span>
     <span style="color:${color};font-weight:600;">${text}</span>
-    <span style="opacity:0.7;margin-left:4px;font-size:12px;">i</span>
   `;
 }
 
@@ -841,7 +841,7 @@ function updateBadgeScore(score: number): void {
   ensureBadge();
   if (!badgeEl) return;
   const color = score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444";
-  updateBadgeEl(badgeEl, `AI: ${Math.round(score)}%`, color);
+  updateBadgeEl(badgeEl, `${Math.round(score)}%`, color);
 }
 
 function updateBadgeText(text: string): void {
@@ -975,7 +975,7 @@ function startContentObserver(): void {
 function startBadgeGuard(): void {
   if (badgeGuardInterval) return;
   badgeGuardInterval = setInterval(() => {
-    if (!document.getElementById("ai-shield-badge") && document.body) {
+    if (!document.getElementById("flare-badge") && document.body) {
       dbg("Badge removed — reattaching.");
       badgeEl = null;
       ensureBadge();

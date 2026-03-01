@@ -42,7 +42,7 @@ chrome.runtime.onMessage.addListener(
         handleExtraction(message.payload as PageExtraction, sender.tab?.id)
           .then(sendResponse)
           .catch((err) => {
-            console.error("[AI Shield BG] Analysis error:", err);
+            console.error("[Flare BG] Analysis error:", err);
             sendResponse(null);
           });
         return true;
@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener(
         handleManualAnalysis(sender.tab?.id)
           .then(sendResponse)
           .catch((err) => {
-            console.error("[AI Shield BG] Manual analysis error:", err);
+            console.error("[Flare BG] Manual analysis error:", err);
             sendResponse(null);
           });
         return true;
@@ -64,7 +64,7 @@ chrome.runtime.onMessage.addListener(
         handleUpdateSettings(message.payload as Partial<ShieldSettings>)
           .then(() => sendResponse({ ok: true }))
           .catch((err) => {
-            console.error("[AI Shield BG] Settings update failed:", err);
+            console.error("[Flare BG] Settings update failed:", err);
             sendResponse({ ok: false, error: "Failed to update settings" });
           });
         return true;
@@ -170,7 +170,7 @@ async function handleManualAnalysis(
     chrome.tabs.sendMessage(tabId, { type: "EXTRACT_CONTENT_TRIGGER" }, () => {
       if (chrome.runtime.lastError) {
         console.warn(
-          "[AI Shield BG] Manual analysis trigger failed:",
+          "[Flare BG] Manual analysis trigger failed:",
           chrome.runtime.lastError.message,
         );
         resolve(null);
@@ -274,9 +274,7 @@ async function analyzeContainers(
     });
 
     if (!response.ok) {
-      console.warn(
-        `[AI Shield BG] /detect/text/spans returned ${response.status}`,
-      );
+      console.warn(`[Flare BG] /detect/text/spans returned ${response.status}`);
       return [];
     }
 
@@ -298,7 +296,7 @@ async function analyzeContainers(
       };
     });
   } catch (err) {
-    console.warn("[AI Shield BG] Failed to analyze text blocks:", err);
+    console.warn("[Flare BG] Failed to analyze text blocks:", err);
     return [];
   }
 }
@@ -315,7 +313,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
         const resp = await fetch(url);
         if (!resp.ok) {
           console.warn(
-            `[AI Shield BG] Failed to fetch image: ${resp.status} ${url.slice(0, 80)}`,
+            `[Flare BG] Failed to fetch image: ${resp.status} ${url.slice(0, 80)}`,
           );
           continue;
         }
@@ -330,10 +328,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
         const mimeType = blob.type || "image/jpeg";
         resolvedImages.push(`data:${mimeType};base64,${base64}`);
       } catch (err) {
-        console.warn(
-          `[AI Shield BG] Image fetch error: ${url.slice(0, 80)}`,
-          err,
-        );
+        console.warn(`[Flare BG] Image fetch error: ${url.slice(0, 80)}`, err);
       }
     } else {
       resolvedImages.push(img);
@@ -356,7 +351,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
 
     if (!response.ok) {
       console.warn(
-        `[AI Shield BG] /detect/image/batch returned ${response.status}`,
+        `[Flare BG] /detect/image/batch returned ${response.status}`,
       );
       return [];
     }
@@ -374,7 +369,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
       explanation: result.explanation ?? null,
     }));
   } catch (err) {
-    console.warn("[AI Shield BG] Failed to analyze images:", err);
+    console.warn("[Flare BG] Failed to analyze images:", err);
     return [];
   }
 }
@@ -390,7 +385,7 @@ async function persistAnalysisForTab(
   try {
     await chrome.storage.session.set({ [`tab_${tabId}`]: analysis });
   } catch (err) {
-    console.warn("[AI Shield BG] Failed to persist analysis:", err);
+    console.warn("[Flare BG] Failed to persist analysis:", err);
   }
 }
 
@@ -404,7 +399,7 @@ async function broadcastAnalysis(
       payload: analysis,
     } satisfies ExtensionMessage);
   } catch (err) {
-    console.warn("[AI Shield BG] Failed to message content script:", err);
+    console.warn("[Flare BG] Failed to message content script:", err);
   }
 
   try {

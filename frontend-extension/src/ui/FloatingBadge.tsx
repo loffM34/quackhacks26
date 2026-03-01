@@ -86,9 +86,7 @@ export const FloatingBadge: React.FC<FloatingBadgeProps> = ({ onExpand }) => {
 
         {/* Score display */}
         <div className="flex-1">
-          <div className="text-sm font-semibold text-glass-100">
-            AI Content Shield
-          </div>
+          <div className="text-sm font-semibold text-glass-100">Flare</div>
           {analysis ? (
             <div className={clsx("text-xl font-bold", colorClasses[color])}>
               AI: {score}% <span className="text-xs opacity-60">ⓘ</span>

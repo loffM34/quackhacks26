@@ -18,7 +18,7 @@ export async function safeSendMessage<T = any>(
     // If the user reloads the extension, orphaned content scripts lose runtime access.
     if (!chrome?.runtime?.id) {
       console.warn(
-        "🛡️ [AI Shield] Extension context invalidated. Ignoring message.",
+        "🔥 [Flare] Extension context invalidated. Ignoring message.",
       );
       return resolve(null);
     }
@@ -28,7 +28,7 @@ export async function safeSendMessage<T = any>(
         // 2. Handle async communication failures.
         if (chrome.runtime.lastError) {
           console.warn(
-            "🛡️ [AI Shield] Background message error:",
+            "🔥 [Flare] Background message error:",
             chrome.runtime.lastError.message,
           );
           return resolve(null);
@@ -38,7 +38,7 @@ export async function safeSendMessage<T = any>(
     } catch (error) {
       // 3. Catch sync errors (another symptom of destroyed context in older MV3 engines)
       console.warn(
-        "🛡️ [AI Shield] Sync message error, context likely dead:",
+        "🔥 [Flare] Sync message error, context likely dead:",
         error,
       );
       resolve(null);

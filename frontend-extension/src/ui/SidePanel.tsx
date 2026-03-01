@@ -153,8 +153,8 @@ export const SidePanel: React.FC = () => {
       )}
     >
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-xl">🛡️</span>
-        <h1 className="text-lg font-bold text-glass-100">AI Content Shield</h1>
+        <span className="text-xl">🔥</span>
+        <h1 className="text-lg font-bold text-glass-100">🔥 Flare</h1>
       </div>
 
       <div className="glass-panel p-4 space-y-3">
