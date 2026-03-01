@@ -49,6 +49,12 @@ interface TextNodeEntry {
 let textNodeMap: TextNodeEntry[] = [];
 let flatText = "";
 
+function scoreToTier(score: number): "low" | "medium" | "high" {
+  if (score <= 40) return "low";
+  if (score <= 70) return "medium";
+  return "high";
+}
+
 // ──────────────────────────────────────────────────────────
 // SECTION 1: Visible text extraction
 // ──────────────────────────────────────────────────────────
@@ -513,7 +519,7 @@ function injectStyles(): void {
   document.head.appendChild(style);
 }
 
-function applyContentBlur(analysis: PageAnalysis): void {
+function applyContentBlur(analysis: LocalizedPageAnalysis): void {
   const threshold = settings?.threshold ?? 70;
   console.log(
     `[AI Shield] Applying blur. Threshold: ${threshold}%, Items: ${analysis.items.length}`,
@@ -522,18 +528,13 @@ function applyContentBlur(analysis: PageAnalysis): void {
   // Rebuild text map before blurring
   mapTextNodes();
 
-  analysis.items
-    .filter((item) => item.type === "text" && item.score > threshold)
-    .forEach((item) => {
-      if (!item.preview) return;
-      const span = highlightRange(item.preview.slice(0, 120), "ai-blur");
-      if (span) {
-        span.title = `AI likelihood: ${Math.round(item.score)}% — click to reveal`;
-        span.addEventListener("click", () => {
-          span.classList.toggle("revealed");
-        });
-      }
-    });
+ analysis.textResults
+  .filter((item: DetectionItemResult) => item.score > threshold)
+  .forEach((item) => {
+    if (item.preview) {
+      blurText(item.preview);
+    }
+  });
 }
 
 function highlightContentOnPage(preview: string): void {
@@ -722,7 +723,7 @@ async function runAnalysis(): Promise<void> {
     },
   };
 
-  chrome.runtime.sendMessage(message, (response: PageAnalysis | null) => {
+  chrome.runtime.sendMessage(message, (response: LocalizedPageAnalysis | null) => {
     isAnalyzing = false;
     if (chrome.runtime.lastError) {
       console.warn(
@@ -744,7 +745,7 @@ async function runAnalysis(): Promise<void> {
   });
 }
 
-function handleAnalysisResult(analysis: PageAnalysis): void {
+function handleAnalysisResult(analysis: LocalizedPageAnalysis): void {
   currentAnalysis = analysis;
   injectFloatingBadge(analysis.overallScore);
 
@@ -869,23 +870,6 @@ chrome.runtime.onMessage.addListener(
 
 // SECTION 11: Initialization
 // ──────────────────────────────────────────────────────────
-
-function loadSettings(): Promise<ShieldSettings> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get("settings", (result) => {
-      resolve(
-        result.settings || {
-          threshold: 70,
-          autoBlur: false,
-          elderMode: false,
-          privacyConsent: true,
-          showSearchDots: true,
-          backendUrl: "http://localhost:3001",
-        },
-      );
-    });
-  });
-}
 
 function cleanText(raw: string): string {
   return raw.replace(/\s+/g, " ").replace(/\n+/g, " ").trim();
