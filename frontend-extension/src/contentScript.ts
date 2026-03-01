@@ -120,7 +120,6 @@ async function safeSend<T = any>(msg: ExtensionMessage): Promise<T | null> {
 }
 
 async function loadSettings(): Promise<ShieldSettings> {
-  const result = await chrome.storage.local.get("settings");
   const defaults: ShieldSettings = {
     threshold: 70,
     autoBlur: false,
@@ -129,7 +128,12 @@ async function loadSettings(): Promise<ShieldSettings> {
     showSearchDots: true,
     backendUrl: "http://localhost:3001",
   };
-  return { ...defaults, ...(result.settings || {}) };
+  try {
+    const result = await chrome.storage.local.get("settings");
+    return { ...defaults, ...(result.settings || {}) };
+  } catch {
+    return defaults;
+  }
 }
 
 function isInExpandedViewport(el: Element): boolean {
@@ -260,29 +264,57 @@ function extractWikipedia(): ExtractedBlock[] {
 function extractGoogleDocs(): ExtractedBlock[] {
   const results: ExtractedBlock[] = [];
 
-  // Try multiple Google Docs editor selectors
-  const selectors = [
-    ".kix-appview-editor",
+  // Modern Google Docs renders each paragraph as a .kix-paragraphrenderer element.
+  // innerText on the container is unreliable because text spans are absolutely
+  // positioned — but innerText on individual paragraph nodes works correctly.
+  const paragraphs = document.querySelectorAll(".kix-paragraphrenderer");
+  dbg(`Google Docs: found ${paragraphs.length} .kix-paragraphrenderer elements`);
+  if (paragraphs.length > 0) {
+    const CHUNK_SIZE = 1500;
+    let buffer = "";
+    let lastEl: Element = paragraphs[paragraphs.length - 1];
+
+    const flush = (el: Element) => {
+      if (buffer.length < MIN_CHARS) return;
+      const fp = fingerprint(buffer);
+      if (scannedFingerprints.has(fp)) return;
+      scannedFingerprints.add(fp);
+      const id = `docs-${blockIdCounter++}`;
+      blockElements.set(id, el);
+      results.push({ id, text: buffer.slice(0, MAX_CHARS), element: el });
+      buffer = "";
+    };
+
+    for (const p of paragraphs) {
+      const text = cleanText((p as HTMLElement).innerText || p.textContent || "");
+      if (!text) continue;
+      lastEl = p;
+      buffer += (buffer ? " " : "") + text;
+      if (buffer.length >= CHUNK_SIZE) flush(p);
+    }
+    flush(lastEl); // flush any remainder
+
+    if (results.length > 0) return results;
+  }
+
+  // Fallback for older / unsupported Google Docs layouts
+  const fallbackSelectors = [
     ".docs-editor-container",
     '[role="textbox"][contenteditable="true"]',
-    ".kix-page-content-wrapper",
+    ".kix-appview-editor",
   ];
-
-  for (const sel of selectors) {
+  for (const sel of fallbackSelectors) {
     const editor = document.querySelector(sel);
     if (!editor) continue;
-
     const text = cleanText((editor as HTMLElement).innerText || "");
     if (text.length < MIN_CHARS) continue;
-
     const fp = fingerprint(text);
     if (scannedFingerprints.has(fp)) continue;
     scannedFingerprints.add(fp);
-
     const id = `docs-${blockIdCounter++}`;
     blockElements.set(id, editor);
     results.push({ id, text: text.slice(0, MAX_CHARS), element: editor });
-    break; // One block for the whole doc
+    break;
   }
 
   return results;
@@ -356,9 +388,8 @@ async function runScan(): Promise<void> {
   if (blocks.length === 0) {
     ensureBadge();
     if (!currentAnalysis) {
-      if (wordCount(document.body?.innerText || "") < 60) {
-        updateBadgeText("No text");
-      }
+      const bodyWords = wordCount(document.body?.innerText || "");
+      updateBadgeText(bodyWords < 60 ? "No text" : "Not enough text");
     }
     return;
   }
@@ -401,6 +432,16 @@ async function runScan(): Promise<void> {
   if (!response) {
     dbg("No response from background.");
     updateBadgeText("Error");
+    return;
+  }
+
+  if (response.items.length === 0) {
+    dbg("No items scored — model was not called (all blocks too short).");
+    // Keep showing the previous valid analysis if we have one — don't overwrite
+    // a good score just because a subsequent scan found nothing scoreable.
+    if (!currentAnalysis) {
+      updateBadgeText("Not enough text");
+    }
     return;
   }
 
@@ -803,8 +844,11 @@ async function init(): Promise<void> {
   setTimeout(() => startContentObserver(), 500);
   startBadgeGuard();
 
-  // Initial scan after page settles
-  setTimeout(() => runScan(), 1000);
+  // Google Docs renders its editor well after document_idle — give it extra time.
+  // For all other pages 1s is enough; Docs needs ~4s before paragraphs appear.
+  const isGoogleDocs = location.hostname.includes("docs.google.com");
+  setTimeout(() => runScan(), isGoogleDocs ? 4000 : 1000);
+  if (isGoogleDocs) setTimeout(() => runScan(), 8000); // second attempt if still loading
 }
 
 // ── Double-init guard ──

@@ -28,14 +28,25 @@ export const SidePanel: React.FC = () => {
 
   // Load cached result and settings on mount
   useEffect(() => {
-    getCachedResult().then((result) => {
-      if (result) setAnalysis(result);
-    });
     loadSettings().then((s) => {
       setSettings(s);
       setThreshold(s.threshold);
       setAutoBlur(s.autoBlur);
       setElderMode(s.elderMode);
+    });
+
+    getCachedResult().then((result) => {
+      if (result) {
+        setAnalysis(result);
+      } else {
+        // No cached result — service worker likely restarted and lost session storage.
+        // Trigger a fresh scan automatically so the user sees results immediately.
+        setLoading(true);
+        requestAnalysis().then((fresh) => {
+          if (fresh) setAnalysis(fresh);
+          setLoading(false);
+        });
+      }
     });
   }, []);
 
