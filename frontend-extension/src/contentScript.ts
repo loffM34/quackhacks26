@@ -415,7 +415,7 @@ function extractPlatformContainers(hostname: string): ExtractedBlock[] {
       if (!isInExpandedViewport(el)) continue;
 
       const text = cleanText((el as HTMLElement).innerText || "");
-      if (text.length < MIN_CHARS) continue;
+      if (text.length < 30) continue; // Lower threshold for platforms (images may carry the content)
 
       const fp = fingerprint(text);
       if (scannedFingerprints.has(fp)) continue;
@@ -1014,7 +1014,28 @@ try {
           break;
 
         case "BLUR_CONTENT":
-          if (currentAnalysis) applyCoarseBlur(currentAnalysis);
+          // Reload settings to get latest threshold, then apply
+          loadSettings().then((s) => {
+            settings = s;
+            if (currentAnalysis) applyCoarseBlur(currentAnalysis);
+          });
+          sendResponse({ ok: true });
+          break;
+
+        case "CLEAR_BLUR":
+          clearBlur();
+          sendResponse({ ok: true });
+          break;
+
+        case "RECALCULATE_BLUR":
+          // Reload settings (threshold may have changed), then reapply or clear
+          loadSettings().then((s) => {
+            settings = s;
+            clearBlur();
+            if (settings.autoBlur && currentAnalysis) {
+              applyCoarseBlur(currentAnalysis);
+            }
+          });
           sendResponse({ ok: true });
           break;
 
