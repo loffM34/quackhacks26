@@ -529,22 +529,6 @@ function applyContentBlur(analysis: LocalizedPageAnalysis): void {
   // Rebuild text map before blurring
   mapTextNodes();
 
-  analysis.textResults
-    .filter((item) => item.score > threshold)
-    .forEach((item) => {
-      const snippet = item.snippet || item.text || "";
-      if (!snippet) return;
-
-      const span = highlightRange(snippet.slice(0, 120), "ai-blur");
-      if (span) {
-        span.classList.add("ai-blur");
-      }
-    });
-}
-
-  // Rebuild text map before blurring
-  mapTextNodes();
-
  analysis.textResults
   .filter((item: DetectionItemResult) => item.score > threshold)
   .forEach((item) => {
