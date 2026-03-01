@@ -297,8 +297,7 @@ async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
         score: Math.round(data.score * 100),
         preview: paragraph.slice(0, 100),
         provider: data.provider,
-        tier: data.tier ?? "unknown",
-      });
+tier: "unknown",      });
     } catch (err) {
       console.warn(
         `[AI Shield BG] Failed to analyze paragraph ${i}:`,
@@ -336,8 +335,7 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
         score: Math.round(data.score * 100),
         preview: images[i].slice(0, 80),
         provider: data.provider,
-        tier: data.tier ?? "unknown",
-      });
+tier: "unknown",      });
     } catch (err) {
       console.warn(
         "[AI Shield BG] Image analysis failed for image",
