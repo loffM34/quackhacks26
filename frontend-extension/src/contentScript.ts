@@ -588,7 +588,6 @@ function clearBlurs(): void {
 
 // ──────────────────────────────────────────────────────────
 // SECTION 6: Badge
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 // ──────────────────────────────────────────────────────────
 
 function injectFloatingBadge(score: number | null): void {
