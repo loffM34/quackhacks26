@@ -675,184 +675,7 @@ function renderBadgeError(): void {
 }
 
 // ──────────────────────────────────────────────────────────
-<<<<<<< HEAD
-// Text highlighting
-// ──────────────────────────────────────────────────────────
 
-function applyTextHighlights(results: DetectionItemResult[]): void {
-  clearExistingTextHighlights();
-
-  const flagged = results.filter((r) => r.tier === "medium" || r.tier === "high");
-  if (flagged.length === 0) return;
-
-  const candidateElements = Array.from(
-    document.querySelectorAll("p, li, blockquote, figcaption, article p, div"),
-  ) as HTMLElement[];
-
-  for (const result of flagged) {
-    if (!result.text) continue;
-
-    const needle = normalizeText(result.text).slice(0, 120);
-    if (!needle) continue;
-
-    for (const el of candidateElements) {
-      if ((el.dataset.aiShieldHighlighted || "") === "true") continue;
-
-      const haystack = normalizeText(el.innerText || el.textContent || "");
-      if (haystack.length < 20) continue;
-
-      if (haystack.includes(needle)) {
-        decorateTextElement(el, result);
-        break;
-      }
-    }
-  }
-}
-
-function decorateTextElement(el: HTMLElement, result: DetectionItemResult): void {
-  el.dataset.aiShieldHighlighted = "true";
-
-  const color = result.tier === "high" ? "#ef4444" : "#eab308";
-  const background =
-    result.tier === "high"
-      ? "rgba(239,68,68,0.08)"
-      : "rgba(234,179,8,0.10)";
-
-  el.style.outline = `2px solid ${color}`;
-  el.style.outlineOffset = "2px";
-  el.style.background = background;
-  el.style.borderRadius = "6px";
-  el.style.transition = "outline 0.2s ease, background 0.2s ease";
-  el.title =
-    result.explanation ||
-    `AI likelihood: ${Math.round(result.score * 100)}%`;
-}
-
-function clearExistingTextHighlights(): void {
-  const highlighted = document.querySelectorAll<HTMLElement>(
-    '[data-ai-shield-highlighted="true"]',
-  );
-
-  highlighted.forEach((el) => {
-    el.dataset.aiShieldHighlighted = "";
-    el.style.outline = "";
-    el.style.outlineOffset = "";
-    el.style.background = "";
-    el.style.borderRadius = "";
-    el.title = "";
-  });
-}
-
-// ──────────────────────────────────────────────────────────
-// Image badges
-// ──────────────────────────────────────────────────────────
-
-function applyImageBadges(results: DetectionItemResult[]): void {
-  clearExistingImageBadges();
-
-  const images = Array.from(document.querySelectorAll("img")) as HTMLImageElement[];
-  const flagged = results.filter((r) => r.tier === "medium" || r.tier === "high");
-
-  flagged.forEach((result) => {
-    const match = /^img_(\d+)$/.exec(result.id);
-    if (!match) return;
-
-    const index = Number(match[1]) - 1;
-    const img = images[index];
-    if (!img) return;
-
-    attachBadgeToImage(img, result);
-  });
-}
-
-function attachBadgeToImage(
-  img: HTMLImageElement,
-  result: DetectionItemResult,
-): void {
-  if (img.dataset.aiShieldBadged === "true") return;
-  img.dataset.aiShieldBadged = "true";
-
-  const wrapper = document.createElement("div");
-  wrapper.style.position = "relative";
-  wrapper.style.display = "inline-block";
-  wrapper.style.maxWidth = "100%";
-
-  const parent = img.parentNode;
-  if (!parent) return;
-
-  parent.insertBefore(wrapper, img);
-  wrapper.appendChild(img);
-
-  const badge = document.createElement("div");
-  const percent = Math.round(result.score * 100);
-  const bg = result.tier === "high" ? "#ef4444" : "#eab308";
-
-  badge.textContent = `${percent}% AI`;
-  badge.title =
-    result.explanation || `AI likelihood: ${percent}%`;
-
-  Object.assign(badge.style, {
-    position: "absolute",
-    top: "8px",
-    right: "8px",
-    zIndex: "10",
-    padding: "4px 8px",
-    borderRadius: "999px",
-    background: bg,
-    color: "white",
-    fontSize: "12px",
-    fontWeight: "700",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
-    cursor: "help",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  });
-
-  wrapper.appendChild(badge);
-}
-
-function clearExistingImageBadges(): void {
-  document
-    .querySelectorAll<HTMLElement>("[data-ai-shield-image-badge='true']")
-    .forEach((el) => el.remove());
-
-  document.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
-    img.dataset.aiShieldBadged = "";
-  });
-}
-
-// ──────────────────────────────────────────────────────────
-// Blur behavior
-// ──────────────────────────────────────────────────────────
-
-function applyContentBlur(analysis: LocalizedPageAnalysis): void {
-  const threshold = settings?.threshold ?? 70;
-
-  analysis.textResults
-    .filter(
-      (item) =>
-        item.score * 100 > threshold &&
-        (item.tier === "medium" || item.tier === "high"),
-    )
-    .forEach((item) => {
-      const paragraphs = document.querySelectorAll("p, li, blockquote");
-      paragraphs.forEach((p) => {
-        const text = (p.textContent || "").trim();
-        if (
-          text.length > 20 &&
-          item.text &&
-          normalizeText(text).includes(normalizeText(item.text).slice(0, 80))
-        ) {
-          applyBlurToElement(p as HTMLElement, item.score * 100);
-        }
-      });
-    });
-}
-
-function applyBlurToElement(el: HTMLElement, score: number): void {
-  if (el.dataset.aiShieldBlurred) return;
-  el.dataset.aiShieldBlurred = "true";
-=======
 // SECTION 7: Main analysis flow
 // ──────────────────────────────────────────────────────────
 
@@ -925,7 +748,6 @@ async function runAnalysis(): Promise<void> {
 function handleAnalysisResult(analysis: PageAnalysis): void {
   currentAnalysis = analysis;
   injectFloatingBadge(analysis.overallScore);
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 
   if (
     settings?.autoBlur &&
@@ -934,44 +756,10 @@ function handleAnalysisResult(analysis: PageAnalysis): void {
     applyContentBlur(analysis);
   }
 
-<<<<<<< HEAD
-  el.style.filter = "blur(4px) saturate(0.85)";
-  el.style.transition = "filter 0.3s ease";
 
-  const label = document.createElement("div");
-  label.textContent = `Hidden: likely AI (${Math.round(score)}%) — show anyway`;
-
-  Object.assign(label.style, {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    transform: "translate(-50%, -50%)",
-    background: "rgba(10,26,74,0.85)",
-    backdropFilter: "blur(8px)",
-    color: "#94a3b8",
-    padding: "6px 12px",
-    borderRadius: "8px",
-    fontSize: "12px",
-    cursor: "pointer",
-    zIndex: "10",
-    border: "1px solid rgba(148,163,184,0.2)",
-    whiteSpace: "nowrap",
-  });
-
-  label.addEventListener("click", () => {
-    el.style.filter = "none";
-    label.remove();
-    el.dataset.aiShieldBlurred = "";
-  });
-
-  el.parentNode?.insertBefore(wrapper, el);
-  wrapper.appendChild(el);
-  wrapper.appendChild(label);
-=======
   if (isGoogleSearchPage()) {
     injectSearchDots();
   }
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 }
 
 // ──────────────────────────────────────────────────────────
@@ -1025,10 +813,7 @@ function injectSearchDots(): void {
 
     const dot = document.createElement("span");
     dot.title = "AI Content Shield: click badge for details";
-<<<<<<< HEAD
 
-=======
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
     Object.assign(dot.style, {
       display: "inline-block",
       width: "8px",
@@ -1043,19 +828,7 @@ function injectSearchDots(): void {
 }
 
 // ──────────────────────────────────────────────────────────
-<<<<<<< HEAD
-// Utility
-// ──────────────────────────────────────────────────────────
 
-function normalizeText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-// ──────────────────────────────────────────────────────────
-// Message handling
-=======
-// SECTION 10: Message listener
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 // ──────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(
@@ -1074,11 +847,7 @@ chrome.runtime.onMessage.addListener(
         break;
 
       case "EXTRACT_CONTENT_TRIGGER":
-<<<<<<< HEAD
-        init().then(() => sendResponse({ ok: true }));
-=======
-        runAnalysis().then(() => sendResponse({ ok: true }));
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
+
         return true;
 
       case "HIGHLIGHT_ITEM": {
