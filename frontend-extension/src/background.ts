@@ -302,7 +302,7 @@ tier:
     ? "low"
     : Math.round(data.score * 100) <= 70
     ? "medium"
-    : "high",,      });
+    : "high",      });
     } catch (err) {
       console.warn(
         `[AI Shield BG] Failed to analyze paragraph ${i}:`,
@@ -345,7 +345,7 @@ tier:
     ? "low"
     : Math.round(data.score * 100) <= 70
     ? "medium"
-    : "high",,      });
+    : "high",      });
     } catch (err) {
       console.warn(
         "[AI Shield BG] Image analysis failed for image",
