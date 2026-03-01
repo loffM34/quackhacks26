@@ -564,15 +564,15 @@ async function runScan(): Promise<void> {
   }
 
   const blocks = extractBlocks();
+  const images = await extractImages();
   dbg(
-    `Extracted ${blocks.length} new blocks (${scannedFingerprints.size} total fingerprints).`,
+    `Extracted ${blocks.length} text blocks, ${images.length} images (${scannedFingerprints.size} fingerprints).`,
   );
 
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && images.length === 0) {
     ensureBadge();
     if (!currentAnalysis) {
-      const bodyWords = wordCount(document.body?.innerText || "");
-      updateBadgeText(bodyWords < 60 ? "No text" : "Not enough text");
+      updateBadgeText("No content to analyze");
     }
     return;
   }
@@ -604,9 +604,6 @@ async function runScan(): Promise<void> {
       (b.element as HTMLElement).dataset.aiShieldDebug = b.id;
     });
   }
-
-  // Extract images in parallel with text block prep
-  const images = await extractImages();
 
   if (DEBUG && images.length > 0) {
     dbg(
@@ -654,7 +651,7 @@ async function runScan(): Promise<void> {
       `[AI Shield] Scores (overall: ${response.overallScore}%)`,
     );
     const rows = response.items.map((item) => {
-      const score = item.score > 1 ? item.score : Math.round(item.score * 100);
+      const score = Math.round(item.score);
       return {
         id: item.id,
         score: `${score}%`,
@@ -667,7 +664,7 @@ async function runScan(): Promise<void> {
   }
   if (DEBUG_VISUAL) {
     response.items.forEach((item) => {
-      const score = item.score > 1 ? item.score : Math.round(item.score * 100);
+      const score = Math.round(item.score);
       const color =
         score <= 40
           ? "rgba(34,197,94,0.6)"
@@ -702,8 +699,7 @@ function applyCoarseBlur(analysis: PageAnalysis): void {
   let blurred = 0;
 
   for (const item of analysis.items) {
-    if (item.type !== "text") continue;
-    const score = item.score > 1 ? item.score : Math.round(item.score * 100);
+    const score = Math.round(item.score);
     if (score <= threshold) continue;
 
     const el = blockElements.get(item.id) as HTMLElement | undefined;
