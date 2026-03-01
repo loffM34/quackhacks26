@@ -1,20 +1,21 @@
 // ──────────────────────────────────────────────────────────
 // Background Service Worker — AI Content Shield
 // ──────────────────────────────────────────────────────────
-// MV3 service worker. Receives page extractions from content scripts,
+// MV3 service worker. Receives block/container extractions from content scripts,
 // calls the backend gateway for AI detection, caches results in
 // chrome.storage.session, and broadcasts results back to content scripts
-// and the popup/sidepanel UI.
+// and sidepanel/popup UI.
 
 import type {
   ExtensionMessage,
   PageAnalysis,
   PageExtraction,
-  DetectTextResponse,
-  DetectImageResponse,
+  BackendDetectionResponse,
   ContentScore,
   ShieldSettings,
   FlagTier,
+  TextChunkInput,
+  ImageInput,
 } from "./types";
 
 // ── In-memory session cache (survives across tabs, cleared on SW restart) ──
@@ -24,7 +25,6 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // ── Default backend URL (overridden by settings) ──
 let backendUrl = "http://localhost:3001";
 
-// ── Load settings on startup ──
 chrome.storage.local.get("settings").then((result) => {
   if (result.settings?.backendUrl) {
     backendUrl = result.settings.backendUrl;
@@ -32,92 +32,99 @@ chrome.storage.local.get("settings").then((result) => {
 });
 
 // ──────────────────────────────────────────────────────────
-// Message listener — central hub for all extension messages
+// Message listener
 // ──────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, sender, sendResponse) => {
-    // Handle each message type
     switch (message.type) {
       case "EXTRACT_CONTENT":
-        // Content script extracted page content — analyze it
         handleExtraction(message.payload as PageExtraction, sender.tab?.id)
           .then(sendResponse)
           .catch((err) => {
             console.error("[AI Shield BG] Analysis error:", err);
             sendResponse(null);
           });
-        return true; // keep channel open for async response
+        return true;
 
       case "ANALYZE_REQUEST":
-        // User clicked "Analyze" button — re-analyze current active tab
         handleManualAnalysis(sender.tab?.id)
           .then(sendResponse)
-          .catch(() => sendResponse(null));
+          .catch((err) => {
+            console.error("[AI Shield BG] Manual analysis error:", err);
+            sendResponse(null);
+          });
         return true;
 
       case "GET_RESULT":
-        // UI requesting cached result for current tab
         handleGetResult(sender.tab?.id).then(sendResponse);
         return true;
 
       case "UPDATE_SETTINGS":
-        // Settings changed — persist and update local state
-        handleUpdateSettings(message.payload as Partial<ShieldSettings>);
-        sendResponse({ ok: true });
-        break;
+        handleUpdateSettings(message.payload as Partial<ShieldSettings>)
+          .then(() => sendResponse({ ok: true }))
+          .catch((err) => {
+            console.error("[AI Shield BG] Settings update failed:", err);
+            sendResponse({ ok: false, error: "Failed to update settings" });
+          });
+        return true;
 
       case "OPEN_SIDE_PANEL":
-        // Badge clicked — open the side panel
         if (sender.tab?.id) {
           chrome.sidePanel.open({ tabId: sender.tab.id }).catch(console.error);
         }
         sendResponse({ ok: true });
-        break;
+        return true;
 
       default:
         sendResponse({ ok: false, error: "Unknown message type" });
+        return true;
     }
   },
 );
 
 // ──────────────────────────────────────────────────────────
-// Analysis logic
+// Analysis flow
 // ──────────────────────────────────────────────────────────
 
-/**
- * Handle content extraction from a page.
- * Checks cache first, then calls backend for uncached content.
- */
 async function handleExtraction(
   extraction: PageExtraction,
   tabId?: number,
 ): Promise<PageAnalysis | null> {
   const cacheKey = generateCacheKey(extraction.url, extraction.containers);
 
-  // Check cache
   const cached = resultCache.get(cacheKey);
   if (cached && Date.now() - cached.analyzedAt < CACHE_TTL_MS) {
-    console.log("[AI Shield BG] Cache hit for:", extraction.url);
-    return { ...cached, cached: true };
+    const cachedResult = { ...cached, cached: true };
+
+    if (tabId) {
+      await persistAnalysisForTab(tabId, cachedResult);
+      await broadcastAnalysis(tabId, cachedResult);
+      updateActionBadge(tabId, cachedResult.overallScore);
+    }
+
+    return cachedResult;
   }
 
-  // Analyze text containers
-  const textScores = await analyzeContainers(extraction.containers);
+  const textItems = await analyzeContainers(extraction.containers);
+  const imageItems = await analyzeImages(extraction.images);
 
-  // Analyze images (if any)
-  const imageScores = await analyzeImages(extraction.images);
+  const allItems = [...textItems, ...imageItems];
 
-  // Combine into page analysis
-  const allItems = [...textScores, ...imageScores];
-  const textAvg = average(textScores.map((s) => s.score));
-  const imageAvg = average(imageScores.map((s) => s.score));
-  const overallScore =
-    allItems.length > 0 ? average(allItems.map((s) => s.score)) : 0;
+  const textScore = Math.round(average(textItems.map((item) => item.score)));
+  const imageScore = Math.round(average(imageItems.map((item) => item.score)));
 
-  // Calculate AI density — % of items flagged as medium/high
+  let overallScore = 0;
+  if (textItems.length > 0 && imageItems.length > 0) {
+    overallScore = Math.round(textScore * 0.6 + imageScore * 0.4);
+  } else if (textItems.length > 0) {
+    overallScore = textScore;
+  } else if (imageItems.length > 0) {
+    overallScore = imageScore;
+  }
+
   const flaggedCount = allItems.filter(
-    (s) => s.tier === "medium" || s.tier === "high",
+    (item) => item.tier === "medium" || item.tier === "high",
   ).length;
   const aiDensity =
     allItems.length > 0
@@ -125,9 +132,9 @@ async function handleExtraction(
       : 0;
 
   const analysis: PageAnalysis = {
-    overallScore: Math.round(overallScore),
-    textScore: Math.round(textAvg),
-    imageScore: Math.round(imageAvg),
+    overallScore,
+    textScore,
+    imageScore,
     aiDensity,
     items: allItems,
     url: extraction.url,
@@ -135,44 +142,21 @@ async function handleExtraction(
     cached: false,
   };
 
-  // Cache result
   resultCache.set(cacheKey, analysis);
 
-  // Also store in chrome.storage.session for popup/sidepanel access
   if (tabId) {
-    chrome.storage.session
-      .set({ [`tab_${tabId}`]: analysis })
-      .catch(console.error);
-  }
-
-  // Update badge text on the extension icon
-  if (tabId) {
-    chrome.action.setBadgeText({ text: `${analysis.overallScore}%`, tabId });
-    chrome.action.setBadgeBackgroundColor({
-      color:
-        analysis.overallScore <= 40
-          ? "#22c55e"
-          : analysis.overallScore <= 70
-            ? "#eab308"
-            : "#ef4444",
-      tabId,
-    });
+    await persistAnalysisForTab(tabId, analysis);
+    await broadcastAnalysis(tabId, analysis);
+    updateActionBadge(tabId, analysis.overallScore);
   }
 
   return analysis;
 }
 
-/**
- * Handle manual "Analyze" button press — extract and analyze the active tab.
- * The flow: trigger content script → it extracts → sends EXTRACT_CONTENT back
- * to background → handleExtraction runs → stores in session storage.
- * We poll session storage for the fresh result.
- */
 async function handleManualAnalysis(
   tabId?: number,
 ): Promise<PageAnalysis | null> {
   if (!tabId) {
-    // Get the active tab (popup/sidepanel don't have sender.tab)
     const [tab] = await chrome.tabs.query({
       active: true,
       currentWindow: true,
@@ -182,12 +166,11 @@ async function handleManualAnalysis(
 
   if (!tabId) return null;
 
-  // Trigger fresh extraction in the content script
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(
-      tabId!,
+      tabId,
       { type: "EXTRACT_CONTENT_TRIGGER" },
-      (_response) => {
+      () => {
         if (chrome.runtime.lastError) {
           console.warn(
             "[AI Shield BG] Manual analysis trigger failed:",
@@ -197,20 +180,18 @@ async function handleManualAnalysis(
           return;
         }
 
-        // The content script will send EXTRACT_CONTENT back to us,
-        // which handleExtraction processes and stores in session storage.
-        // Poll for the result (it takes 1-3 seconds for the backend call).
         const pollKey = `tab_${tabId}`;
         let attempts = 0;
-        const maxAttempts = 15; // 15 * 500ms = 7.5s max wait
+        const maxAttempts = 20;
 
         const poll = setInterval(async () => {
-          attempts++;
+          attempts += 1;
+
           try {
             const stored = await chrome.storage.session.get(pollKey);
             const result = stored[pollKey] as PageAnalysis | undefined;
-            if (result && Date.now() - result.analyzedAt < 10000) {
-              // Fresh result found
+
+            if (result && Date.now() - result.analyzedAt < 15000) {
               clearInterval(poll);
               resolve(result);
             } else if (attempts >= maxAttempts) {
@@ -227,9 +208,6 @@ async function handleManualAnalysis(
   });
 }
 
-/**
- * Get cached result for a tab.
- */
 async function handleGetResult(tabId?: number): Promise<PageAnalysis | null> {
   if (!tabId) {
     const [tab] = await chrome.tabs.query({
@@ -238,21 +216,18 @@ async function handleGetResult(tabId?: number): Promise<PageAnalysis | null> {
     });
     tabId = tab?.id;
   }
+
   if (!tabId) return null;
 
   const result = await chrome.storage.session.get(`tab_${tabId}`);
   return result[`tab_${tabId}`] || null;
 }
 
-/**
- * Persist updated settings.
- */
 async function handleUpdateSettings(
   partial: Partial<ShieldSettings>,
 ): Promise<void> {
   const current = await chrome.storage.local.get("settings");
 
-  // Default values to ensure a complete object is always saved
   const DEFAULT_SETTINGS: ShieldSettings = {
     threshold: 70,
     autoBlur: false,
@@ -262,11 +237,12 @@ async function handleUpdateSettings(
     backendUrl: "http://localhost:3001",
   };
 
-  const updated = {
+  const updated: ShieldSettings = {
     ...DEFAULT_SETTINGS,
     ...(current.settings || {}),
     ...partial,
   };
+
   await chrome.storage.local.set({ settings: updated });
 
   if (updated.backendUrl) {
@@ -275,166 +251,210 @@ async function handleUpdateSettings(
 }
 
 // ──────────────────────────────────────────────────────────
-// Backend API calls
+// Backend calls
 // ──────────────────────────────────────────────────────────
 
-/**
- * Send each container to the backend individually for per-container scoring (e.g. per social post).
- */
 async function analyzeContainers(
   containers: Array<{ id: string; text: string }>,
 ): Promise<ContentScore[]> {
   if (containers.length === 0) return [];
 
-  const scores: ContentScore[] = [];
+  const chunks: TextChunkInput[] = containers
+    .slice(0, 30)
+    .map((container) => ({
+      id: container.id,
+      text: container.text.slice(0, 2500),
+      kind: "block",
+    }))
+    .filter((chunk) => wordCount(chunk.text) >= 60);
 
-  // Send containers individually (limit to 10 to avoid rate limiting)
-  const toAnalyze = containers.slice(0, 10);
+  if (chunks.length === 0) return [];
 
-  for (let i = 0; i < toAnalyze.length; i++) {
-    const container = toAnalyze[i];
-    const text = container.text.slice(0, 2000); // enforce max length
+  try {
+    const response = await fetch(`${backendUrl}/detect/text/spans`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chunks }),
+    });
 
-    // DistilBERT model requirement: minimum 60 words for accurate detection
-    const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
-    if (wordCount < 60) continue; // skip blocks under 60 words
-
-    try {
-      const response = await fetch(`${backendUrl}/detect/text`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-
-      if (!response.ok) {
-        console.warn(
-          `[AI Shield BG] Backend returned ${response.status} for container ${container.id}`,
-        );
-        continue;
-      }
-
-      const data: DetectTextResponse = await response.json();
-      const score = Math.round(data.score * 100);
-      const tier: FlagTier =
-        score <= 40 ? "low" : score <= 70 ? "medium" : "high";
-
-      scores.push({
-        id: container.id,
-        type: "text",
-        score,
-        tier,
-        preview: text.slice(0, 100),
-        provider: data.provider,
-        flaggedRanges: data.flaggedRanges,
-        explanation: (data as any).explanation ?? null,
-      });
-    } catch (err) {
+    if (!response.ok) {
       console.warn(
-        `[AI Shield BG] Failed to analyze container ${container.id}:`,
-        err,
+        `[AI Shield BG] /detect/text/spans returned ${response.status}`,
       );
+      return [];
     }
-  }
 
-  return scores;
+    const data = (await response.json()) as BackendDetectionResponse;
+    const results = data.details?.results ?? [];
+
+    return results.map((result) => {
+      const original = chunks.find((chunk) => chunk.id === result.id);
+
+      return {
+        id: result.id,
+        type: "text",
+        score: normalizeBackendScore(result.score),
+        tier:
+          result.tier || tierFromPercent(normalizeBackendScore(result.score)),
+        preview: (result.text || original?.text || "").slice(0, 220),
+        provider: data.provider || "python-model",
+        explanation: result.explanation ?? null,
+      };
+    });
+  } catch (err) {
+    console.warn("[AI Shield BG] Failed to analyze text blocks:", err);
+    return [];
+  }
 }
 
-/**
- * Send images to the backend for AI-generated image detection.
- */
 async function analyzeImages(images: string[]): Promise<ContentScore[]> {
-  if (images.length === 0) return [];
+  if (!images || images.length === 0) return [];
 
-  const scores: ContentScore[] = [];
+  const payload: ImageInput[] = images.slice(0, 12).map((image, index) => ({
+    id: `img_${index + 1}`,
+    image,
+  }));
 
-  for (let i = 0; i < images.length; i++) {
-    try {
-      const response = await fetch(`${backendUrl}/detect/image`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: images[i] }),
-      });
+  try {
+    const response = await fetch(`${backendUrl}/detect/image/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images: payload }),
+    });
 
-      if (!response.ok) continue;
-
-      const data: DetectImageResponse = await response.json();
-      const score = Math.round(data.score * 100);
-      const tier: FlagTier =
-        score <= 40 ? "low" : score <= 70 ? "medium" : "high";
-
-      scores.push({
-        id: `img-${i}`,
-        type: "image",
-        score,
-        tier,
-        preview: images[i].slice(0, 80),
-        provider: data.provider,
-        explanation: (data as any).explanation ?? null,
-      });
-    } catch (err) {
-      console.warn("[AI Shield BG] Image analysis failed for image", i, err);
+    if (!response.ok) {
+      console.warn(
+        `[AI Shield BG] /detect/image/batch returned ${response.status}`,
+      );
+      return [];
     }
+
+    const data = (await response.json()) as BackendDetectionResponse;
+    const results = data.details?.results ?? [];
+
+    return results.map((result) => ({
+      id: result.id,
+      type: "image",
+      score: normalizeBackendScore(result.score),
+      tier:
+        result.tier || tierFromPercent(normalizeBackendScore(result.score)),
+      preview: result.id,
+      provider: data.provider || "python-model",
+      explanation: result.explanation ?? null,
+    }));
+  } catch (err) {
+    console.warn("[AI Shield BG] Failed to analyze images:", err);
+    return [];
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+// Persistence / broadcast helpers
+// ──────────────────────────────────────────────────────────
+
+async function persistAnalysisForTab(
+  tabId: number,
+  analysis: PageAnalysis,
+): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [`tab_${tabId}`]: analysis });
+  } catch (err) {
+    console.warn("[AI Shield BG] Failed to persist analysis:", err);
+  }
+}
+
+async function broadcastAnalysis(
+  tabId: number,
+  analysis: PageAnalysis,
+): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "ANALYSIS_RESULT",
+      payload: analysis,
+    } satisfies ExtensionMessage);
+  } catch (err) {
+    console.warn("[AI Shield BG] Failed to message content script:", err);
   }
 
-  return scores;
+  try {
+    await chrome.runtime.sendMessage({
+      type: "ANALYSIS_RESULT",
+      payload: analysis,
+    } satisfies ExtensionMessage);
+  } catch {
+    // okay if no listener
+  }
+}
+
+function updateActionBadge(tabId: number, score: number): void {
+  chrome.action.setBadgeText({
+    text: `${Math.round(score)}%`,
+    tabId,
+  });
+
+  chrome.action.setBadgeBackgroundColor({
+    color:
+      score <= 40 ? "#22c55e" : score <= 70 ? "#eab308" : "#ef4444",
+    tabId,
+  });
 }
 
 // ──────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────
 
-/** Generate a cache key from URL + content hash */
-function generateCacheKey(
-  url: string,
-  containers: { id: string; text: string }[],
-): string {
-  const contentSample = containers
-    .slice(0, 3)
-    .map((c) => c.text)
-    .join("")
-    .slice(0, 200);
-  return `${url}::${simpleHash(contentSample)}`;
+function normalizeBackendScore(score: number): number {
+  if (score > 0 && score <= 1) return Math.round(score * 100);
+  return Math.round(score);
 }
 
-/** Simple string hash for cache keys */
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0; // 32-bit integer
-  }
-  return hash.toString(36);
+function tierFromPercent(score: number): FlagTier {
+  if (score >= 80) return "high";
+  if (score >= 60) return "medium";
+  return "low";
 }
 
-/** Average of an array of numbers */
+function wordCount(text: string): number {
+  return text.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
 function average(nums: number[]): number {
   if (nums.length === 0) return 0;
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-// ── Rescan on traditional navigation ──
+function generateCacheKey(
+  url: string,
+  containers: Array<{ id: string; text: string }>,
+): string {
+  const sample = containers
+    .slice(0, 5)
+    .map((c) => c.text.slice(0, 180))
+    .join("|");
+
+  return `${url}::${simpleHash(sample)}`;
+}
+
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    const char = str.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
+// ── Clear tab cache on navigation ──
 const tabUrls = new Map<number, string>();
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete" || !tab.url) return;
 
   const prevUrl = tabUrls.get(tabId);
-  tabUrls.set(tabId, tab.url);
-
-  // Only trigger if the URL actually changed
-  if (prevUrl && prevUrl !== tab.url) {
-    chrome.tabs
-      .sendMessage(tabId, { type: "EXTRACT_CONTENT_TRIGGER" })
-      .catch(() => {
-        // Content script not ready yet — ignore
-      });
+  if (prevUrl !== tab.url) {
+    tabUrls.set(tabId, tab.url);
+    chrome.storage.session.remove(`tab_${tabId}`).catch(() => {});
+    chrome.action.setBadgeText({ text: "", tabId }).catch?.(() => {});
   }
 });
-
-// ── Register side panel behavior ──
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: false })
-  .catch(console.error);
-
-console.log("[AI Shield] Background service worker initialized.");
