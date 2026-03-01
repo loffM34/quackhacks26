@@ -17,6 +17,7 @@ import type {
   ExtractedContainerData,
   PageExtraction,
 } from "./types";
+import { safeSendMessage } from "./utils/api";
 
 // ──────────────────────────────────────────────────────────
 // § STATE
@@ -422,6 +423,32 @@ function clearHighlights(): void {
     });
 }
 
+function teardown(): void {
+  log("Extension context invalidated. Tearing down orphaned content script.");
+
+  if (urlObserver) {
+    urlObserver.disconnect();
+    urlObserver = null;
+  }
+  if (contentObserver) {
+    contentObserver.disconnect();
+    contentObserver = null;
+  }
+  if (badgeCheckInterval) {
+    clearInterval(badgeCheckInterval);
+    badgeCheckInterval = null;
+  }
+  if (urlDebounceTimer) clearTimeout(urlDebounceTimer);
+  if (contentDebounceTimer) clearTimeout(contentDebounceTimer);
+
+  clearAllShieldSpans();
+
+  if (badgeElement) {
+    badgeElement.remove();
+    badgeElement = null;
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 // § BLUR LOGIC — isolated to flaggedRanges only
 // ──────────────────────────────────────────────────────────
@@ -555,8 +582,9 @@ function ensureBadge(): void {
   badge.addEventListener("mouseleave", () => {
     badge.style.transform = "scale(1)";
   });
-  badge.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "OPEN_SIDE_PANEL" });
+  badge.addEventListener("click", async () => {
+    const res = await safeSendMessage({ type: "OPEN_SIDE_PANEL" });
+    if (res === null) teardown();
   });
 
   updateBadgeContent(badge, null);
@@ -635,18 +663,17 @@ async function scanNewContainers(): Promise<void> {
     },
   };
 
-  chrome.runtime.sendMessage(message, (response: PageAnalysis | null) => {
-    isAnalyzing = false;
-    if (chrome.runtime.lastError) {
-      log("Extraction message failed:", chrome.runtime.lastError.message);
-      updateBadge(null);
-      return;
-    }
+  const response = await safeSendMessage<PageAnalysis>(message);
+  isAnalyzing = false;
 
-    if (response) {
-      handleAnalysisResult(response, newContainers);
-    }
-  });
+  if (response === null) {
+    log("Extraction message failed or context dead.");
+    updateBadge(null);
+    teardown();
+    return;
+  }
+
+  handleAnalysisResult(response, newContainers);
 }
 
 function handleAnalysisResult(
@@ -760,45 +787,55 @@ function resetForNavigation(): void {
 // § MESSAGE LISTENER
 // ──────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener(
-  (message: ExtensionMessage, _sender, sendResponse) => {
-    switch (message.type) {
-      case "ANALYSIS_RESULT":
-        handleAnalysisResult(message.payload as PageAnalysis, []);
-        sendResponse({ ok: true });
-        break;
-
-      case "BLUR_CONTENT":
-        if (currentAnalysis) applyBlur(currentAnalysis);
-        sendResponse({ ok: true });
-        break;
-
-      case "INJECT_DOTS":
-        // Logic for search dots (placeholder for actual implementation)
-        sendResponse({ ok: true });
-        break;
-
-      case "EXTRACT_CONTENT_TRIGGER":
-        // Force a fresh scan
-        scannedFingerprints.clear();
-        activeContainers.clear();
-        containerIdCounter = 0;
-        scanNewContainers().then(() => sendResponse({ ok: true }));
-        return true;
-
-      case "HIGHLIGHT_ITEM": {
-        const { preview, item } = message.payload || {};
-        if (preview) highlightItemOnPage(preview, item);
-        sendResponse({ ok: true });
-        break;
+try {
+  chrome.runtime.onMessage.addListener(
+    (message: ExtensionMessage, _sender, sendResponse) => {
+      // 1. Defensively check context to catch any stale bindings early
+      if (!chrome?.runtime?.id) {
+        teardown();
+        return false;
       }
 
-      default:
-        sendResponse({ ok: false, error: "Unknown message type" });
-    }
-    return true;
-  },
-);
+      switch (message.type) {
+        case "ANALYSIS_RESULT":
+          handleAnalysisResult(message.payload as PageAnalysis, []);
+          sendResponse({ ok: true });
+          break;
+
+        case "BLUR_CONTENT":
+          if (currentAnalysis) applyBlur(currentAnalysis);
+          sendResponse({ ok: true });
+          break;
+
+        case "INJECT_DOTS":
+          // Logic for search dots (placeholder for actual implementation)
+          sendResponse({ ok: true });
+          break;
+
+        case "EXTRACT_CONTENT_TRIGGER":
+          // Force a fresh scan
+          scannedFingerprints.clear();
+          activeContainers.clear();
+          containerIdCounter = 0;
+          scanNewContainers().then(() => sendResponse({ ok: true }));
+          return true;
+
+        case "HIGHLIGHT_ITEM": {
+          const { preview, item } = message.payload || {};
+          if (preview) highlightItemOnPage(preview, item);
+          sendResponse({ ok: true });
+          break;
+        }
+
+        default:
+          sendResponse({ ok: false, error: "Unknown message type" });
+      }
+      return true;
+    },
+  );
+} catch (e) {
+  log("Failed to register message listener. Context likely invalid.", e);
+}
 
 // ──────────────────────────────────────────────────────────
 // § MAIN ENTRY POINT

@@ -5,19 +5,43 @@
 import type { ExtensionMessage, PageAnalysis, ShieldSettings } from "@/types";
 
 /**
- * Send a message to the background service worker and await the response.
+ * Safely send a message to the background service worker.
+ * Prevents "Extension context invalidated" errors by checking context validity
+ * and catching synchronous throws, returning null gracefully instead of crashing.
  */
-export function sendToBackground<T = any>(
+export async function safeSendMessage<T = any>(
   message: ExtensionMessage,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(response as T);
-    });
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    // 1. Defensively check context validity.
+    // If the user reloads the extension, orphaned content scripts lose runtime access.
+    if (!chrome?.runtime?.id) {
+      console.warn(
+        "🛡️ [AI Shield] Extension context invalidated. Ignoring message.",
+      );
+      return resolve(null);
+    }
+
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        // 2. Handle async communication failures.
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "🛡️ [AI Shield] Background message error:",
+            chrome.runtime.lastError.message,
+          );
+          return resolve(null);
+        }
+        resolve(response as T);
+      });
+    } catch (error) {
+      // 3. Catch sync errors (another symptom of destroyed context in older MV3 engines)
+      console.warn(
+        "🛡️ [AI Shield] Sync message error, context likely dead:",
+        error,
+      );
+      resolve(null);
+    }
   });
 }
 
@@ -25,7 +49,7 @@ export function sendToBackground<T = any>(
  * Request a fresh analysis of the current tab (legacy/background flow).
  */
 export async function requestAnalysis(): Promise<PageAnalysis | null> {
-  return sendToBackground<PageAnalysis | null>({
+  return safeSendMessage<PageAnalysis | null>({
     type: "ANALYZE_REQUEST",
   });
 }
@@ -34,7 +58,7 @@ export async function requestAnalysis(): Promise<PageAnalysis | null> {
  * Get the cached analysis result for the current tab (legacy/background flow).
  */
 export async function getCachedResult(): Promise<PageAnalysis | null> {
-  return sendToBackground<PageAnalysis | null>({
+  return safeSendMessage<PageAnalysis | null>({
     type: "GET_RESULT",
   });
 }
@@ -45,7 +69,7 @@ export async function getCachedResult(): Promise<PageAnalysis | null> {
 export async function updateSettings(
   settings: Partial<ShieldSettings>,
 ): Promise<void> {
-  return sendToBackground({
+  await safeSendMessage({
     type: "UPDATE_SETTINGS",
     payload: settings,
   });
