@@ -1,133 +1,85 @@
 """
 Model Loader — AI Content Detection Models
 ===========================================
-Updated version with:
-- device placement
-- safer label mapping
-- text batch inference
-- robust image decoding
+Loads the fine-tuned DistilBERT model trained on HC3 + RAID datasets.
+
+Usage:
+  detector = TextDetector()
+  result = detector.predict("Some text to analyze")
+  # result = {"ai_prob": 0.91, "human_prob": 0.09, "pred": "ai"}
 """
 
-from __future__ import annotations
-
-import base64
-from io import BytesIO
-from typing import Iterable, List
-
 import torch
-from PIL import Image
-from transformers import (
-    AutoFeatureExtractor,
-    AutoModelForImageClassification,
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-)
+import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from pathlib import Path
 
+# Path to the fine-tuned model files (relative to this file)
+DEFAULT_MODEL_PATH = Path(__file__).parent / "model"
 
-def _normalize_label(label: str) -> str:
-    return label.strip().lower().replace("_", " ")
-
-
-def _find_ai_label_index(id2label: dict, positive_terms: Iterable[str], fallback_index: int = 1) -> int:
-    if not id2label:
-        return fallback_index
-
-    normalized = {int(k): _normalize_label(v) for k, v in id2label.items()}
-
-    # Prefer explicit positive labels.
-    for idx, label in normalized.items():
-        if any(term in label for term in positive_terms):
-            return idx
-
-    # If we can identify a clearly "real" label in a binary classifier, use the other index.
-    if len(normalized) == 2:
-        for idx, label in normalized.items():
-            if any(term in label for term in ["real", "human", "natural", "authentic", "organic"]):
-                other_indices = [i for i in normalized.keys() if i != idx]
-                if other_indices:
-                    return other_indices[0]
-
-    return fallback_index
+# Temperature learned from calibration on validation set.
+# Re-run temperature scaling on the Colab notebook to update this if you retrain.
+DEFAULT_TEMPERATURE = 1.8
 
 
 class TextDetector:
-    """Text AI-detection model using Hugging Face Transformers."""
+    """
+    AI text detection using the fine-tuned DistilBERT model.
+    Trained on HC3 (Reddit Q&A) + RAID (multi-domain, multi-generator) datasets.
+    """
 
-    def __init__(self, model_name: str = "openai-community/roberta-base-openai-detector"):
-        self.model_name = model_name
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        print(f"Loading text model: {model_name} on {self.device}")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        self.model.to(self.device)
+    def __init__(
+        self,
+        model_path: str | Path = DEFAULT_MODEL_PATH,
+        temperature: float = DEFAULT_TEMPERATURE,
+    ):
+        model_path = str(model_path)
+        print(f"Loading text model from: {model_path}")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
         self.model.eval()
-
-        self.ai_label_index = _find_ai_label_index(
-            getattr(self.model.config, "id2label", {}),
-            positive_terms=["ai", "fake", "generated", "synthetic", "machine"],
-            fallback_index=1,
-        )
-        print(f"✅ Text model loaded: {model_name} (AI label index: {self.ai_label_index})")
+        self.temperature = temperature
+        print("Text model loaded.")
 
     @torch.no_grad()
-    def predict(self, text: str) -> float:
-        return self.predict_batch([text])[0]
+    def predict(self, text: str, threshold: float = 0.85) -> dict:
+        """
+        Predict whether text is AI-generated.
 
-    @torch.no_grad()
-    def predict_batch(self, texts: List[str]) -> List[float]:
+        Args:
+            text: The text to analyze.
+            threshold: Minimum confidence to make a call. Below this returns "uncertain".
+
+        Returns:
+            dict with keys: ai_prob, human_prob, pred ("ai" | "human" | "uncertain")
+        """
         inputs = self.tokenizer(
-            texts,
+            text,
             return_tensors="pt",
             truncation=True,
-            max_length=512,
+            max_length=256,
             padding=True,
         )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        outputs = self.model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=-1)
-        return probs[:, self.ai_label_index].detach().cpu().tolist()
+        logits = self.model(**inputs).logits[0]
+        probs = F.softmax(logits / self.temperature, dim=-1).numpy()
+
+        ai_prob = float(probs[1])
+        human_prob = float(probs[0])
+
+        if max(ai_prob, human_prob) < threshold:
+            pred = "uncertain"
+        else:
+            pred = "ai" if ai_prob >= human_prob else "human"
+
+        return {"ai_prob": ai_prob, "human_prob": human_prob, "pred": pred}
 
 
 class ImageDetector:
-    """Image AI-detection model using Hugging Face image classification."""
+    """
+    Image AI-detection model.
+    Not currently supported — returns a neutral score.
+    """
 
-    def __init__(self, model_name: str = "umm-maybe/AI-image-detector"):
-        self.model_name = model_name
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        print(f"Loading image model: {model_name} on {self.device}")
-        self.extractor = AutoFeatureExtractor.from_pretrained(model_name)
-        self.model = AutoModelForImageClassification.from_pretrained(model_name)
-        self.model.to(self.device)
-        self.model.eval()
-
-        self.ai_label_index = _find_ai_label_index(
-            getattr(self.model.config, "id2label", {}),
-            positive_terms=["ai", "fake", "generated", "synthetic", "artificial"],
-            fallback_index=1,
-        )
-        print(f"✅ Image model loaded: {model_name} (AI label index: {self.ai_label_index})")
-
-    def _decode_image(self, image_data: str) -> Image.Image:
-        if not image_data:
-            raise ValueError("Empty image payload")
-
-        try:
-            base64_str = image_data.split(",", 1)[-1]
-            image_bytes = base64.b64decode(base64_str)
-            image = Image.open(BytesIO(image_bytes)).convert("RGB")
-            return image
-        except Exception as exc:
-            raise ValueError("Invalid base64 image data") from exc
-
-    @torch.no_grad()
     def predict(self, image_data: str) -> float:
-        image = self._decode_image(image_data)
-        inputs = self.extractor(images=image, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        outputs = self.model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=-1)
-        return probs[:, self.ai_label_index].detach().cpu().item()
+        return 0.5

@@ -279,7 +279,10 @@ async function analyzeContainers(
   for (let i = 0; i < toAnalyze.length; i++) {
     const container = toAnalyze[i];
     const text = container.text.slice(0, 2000); // enforce max length
-    if (text.length < 50) continue; // skip short fragments
+
+    // DistilBERT model requirement: minimum 60 words for accurate detection
+    const wordCount = text.split(/\s+/).filter((w) => w.length > 0).length;
+    if (wordCount < 60) continue; // skip blocks under 60 words
 
     try {
       const response = await fetch(`${backendUrl}/detect/text`, {
@@ -394,6 +397,25 @@ function average(nums: number[]): number {
   if (nums.length === 0) return 0;
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
+
+// ── Rescan on traditional navigation ──
+const tabUrls = new Map<number, string>();
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete" || !tab.url) return;
+
+  const prevUrl = tabUrls.get(tabId);
+  tabUrls.set(tabId, tab.url);
+
+  // Only trigger if the URL actually changed
+  if (prevUrl && prevUrl !== tab.url) {
+    chrome.tabs
+      .sendMessage(tabId, { type: "EXTRACT_CONTENT_TRIGGER" })
+      .catch(() => {
+        // Content script not ready yet — ignore
+      });
+  }
+});
 
 // ── Register side panel behavior ──
 chrome.sidePanel
