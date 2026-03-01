@@ -62,24 +62,37 @@ export const SidePanel: React.FC = () => {
     setLoading(false);
   };
 
-  const handleThresholdChange = useCallback((value: number) => {
-    setThreshold(value);
-    updateSettings({ threshold: value });
+  // Helper: send a RECALCULATE_BLUR message to the active tab's content script
+  const triggerBlurRecalculation = useCallback(() => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "RECALCULATE_BLUR" });
+      }
+    });
   }, []);
+
+  // Update threshold visually during drag (no re-evaluation)
+  const handleThresholdInput = useCallback((value: number) => {
+    setThreshold(value);
+  }, []);
+
+  // Commit threshold on mouse-up/touch-end and trigger re-evaluation
+  const handleThresholdCommit = useCallback(
+    (value: number) => {
+      setThreshold(value);
+      updateSettings({ threshold: value });
+      triggerBlurRecalculation();
+    },
+    [triggerBlurRecalculation],
+  );
 
   const handleAutoBlurToggle = useCallback(() => {
     const next = !autoBlur;
     setAutoBlur(next);
     updateSettings({ autoBlur: next });
-    // If enabling, also tell the content script to blur now
-    if (next) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, { type: "BLUR_CONTENT" });
-        }
-      });
-    }
-  }, [autoBlur]);
+    // Trigger recalculation for BOTH enable and disable
+    triggerBlurRecalculation();
+  }, [autoBlur, triggerBlurRecalculation]);
 
   const handleElderModeToggle = useCallback(() => {
     const next = !elderMode;
@@ -248,7 +261,7 @@ export const SidePanel: React.FC = () => {
         {/* Threshold slider */}
         <div>
           <div className="flex justify-between text-xs text-glass-text-muted mb-1">
-            <span>Blur threshold</span>
+            <span>AI Score Threshold</span>
             <span className="font-mono">{threshold}%</span>
           </div>
           <input
@@ -256,12 +269,15 @@ export const SidePanel: React.FC = () => {
             min={0}
             max={100}
             value={threshold}
-            onChange={(e) => handleThresholdChange(Number(e.target.value))}
+            onInput={(e) =>
+              handleThresholdInput(Number((e.target as HTMLInputElement).value))
+            }
+            onChange={(e) => handleThresholdCommit(Number(e.target.value))}
             className="w-full"
           />
           <div className="flex justify-between text-[10px] text-glass-text-dim mt-0.5">
-            <span>Lenient</span>
-            <span>Strict</span>
+            <span>Aggressive (0%)</span>
+            <span>Cautious (100%)</span>
           </div>
         </div>
 

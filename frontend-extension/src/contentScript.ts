@@ -18,6 +18,17 @@ import type {
   PageExtraction,
 } from "./types";
 
+// ──────────────────────────────────────────────────────────
+// § GLOBAL ERROR HANDLING (Orphaned Content Script Guard)
+// ──────────────────────────────────────────────────────────
+window.addEventListener("unhandledrejection", (event) => {
+  const msg = event.reason?.message || String(event.reason);
+  if (msg.includes("Extension context invalidated")) {
+    console.warn("🛡️ [AI Shield] Suppressed orphaned content script error.");
+    event.preventDefault();
+  }
+});
+
 /**
  * Safely send a message to the background service worker.
  * Inlined here to prevent Vite from code-splitting and outputting ES modules
@@ -75,6 +86,10 @@ interface ExtractedContainer {
   element: Element;
   flatText: string;
   textNodeMap: TextNodeEntry[];
+  /** AI score (0-100), set when backend returns results. -1 = not yet scored. */
+  score: number;
+  /** Character ranges flagged by the AI model for this container */
+  flaggedRanges: Array<{ start: number; end: number }>;
 }
 
 const activeContainers = new Map<string, ExtractedContainer>();
@@ -169,7 +184,6 @@ function isExcluded(el: Element): boolean {
 }
 
 async function loadSettings(): Promise<ShieldSettings> {
-  const result = await chrome.storage.local.get("settings");
   const DEFAULT_SETTINGS: ShieldSettings = {
     threshold: 70,
     autoBlur: false,
@@ -178,7 +192,22 @@ async function loadSettings(): Promise<ShieldSettings> {
     showSearchDots: true,
     backendUrl: "http://localhost:3001",
   };
-  return { ...DEFAULT_SETTINGS, ...(result.settings || {}) };
+
+  if (!chrome?.runtime?.id) {
+    return DEFAULT_SETTINGS;
+  }
+
+  try {
+    const result = await chrome.storage.local.get("settings");
+    return { ...DEFAULT_SETTINGS, ...(result.settings || {}) };
+  } catch (err: any) {
+    if (err?.message?.includes("Extension context invalidated")) {
+      teardown();
+    } else {
+      console.warn("🛡️ [AI Shield] Settings load error:", err);
+    }
+    return DEFAULT_SETTINGS;
+  }
 }
 
 function normalizeScore(score: number): number {
@@ -296,7 +325,14 @@ function extractNewContainers(): Array<{ id: string; text: string }> {
 
       scannedFingerprints.add(fp);
       const id = `c-${containerIdCounter++}`;
-      activeContainers.set(id, { id, element: el, flatText, textNodeMap });
+      activeContainers.set(id, {
+        id,
+        element: el,
+        flatText,
+        textNodeMap,
+        score: -1,
+        flaggedRanges: [],
+      });
       results.push({ id, text: flatText.slice(0, 3000) });
     }
   }
@@ -317,7 +353,14 @@ function extractGoogleDocsContainers(): Array<{ id: string; text: string }> {
 
   scannedFingerprints.add(fp);
   const id = `docs-${containerIdCounter++}`;
-  activeContainers.set(id, { id, element: editor, flatText, textNodeMap });
+  activeContainers.set(id, {
+    id,
+    element: editor,
+    flatText,
+    textNodeMap,
+    score: -1,
+    flaggedRanges: [],
+  });
   results.push({ id, text: flatText.slice(0, 4000) });
   return results;
 }
@@ -481,32 +524,108 @@ function teardown(): void {
 }
 
 // ──────────────────────────────────────────────────────────
-// § BLUR LOGIC — isolated to flaggedRanges only
+// § BLUR LOGIC — derived from container-level scores
 // ──────────────────────────────────────────────────────────
 
-function applyBlur(analysis: PageAnalysis): void {
+/**
+ * Apply blur spans to a single container's flagged ranges.
+ * Uses the container's persisted score and flaggedRanges.
+ */
+function applyBlurToContainer(container: ExtractedContainer): number {
   const threshold = settings?.threshold ?? 70;
+
+  if (container.score < 0 || container.score <= threshold) return 0;
+  if (container.flaggedRanges.length === 0) return 0;
+
   let blurCount = 0;
-
-  for (const item of analysis.items) {
-    if (item.type !== "text") continue;
-    const score = normalizeScore(item.score);
-    if (score <= threshold) continue;
-    if (!item.flaggedRanges || item.flaggedRanges.length === 0) continue;
-
-    for (const range of item.flaggedRanges) {
-      const spans = highlightRange(item.id, range.start, range.end, "ai-blur");
-      for (const span of spans) {
-        blurCount++;
-        span.title = `AI likelihood: ${score}% — click to reveal`;
-        span.addEventListener("click", () => {
-          span.classList.toggle("revealed");
-        });
-      }
+  for (const range of container.flaggedRanges) {
+    const spans = highlightRange(
+      container.id,
+      range.start,
+      range.end,
+      "ai-blur",
+    );
+    for (const span of spans) {
+      blurCount++;
+      span.title = `AI likelihood: ${container.score}% — click to reveal`;
+      span.addEventListener("click", () => {
+        span.classList.toggle("revealed");
+      });
     }
   }
 
-  log(`Applied blur to ${blurCount} spans (threshold: ${threshold}%).`);
+  // Mark the container element itself for CSS targeting
+  container.element.classList.add("ai-blurred");
+  return blurCount;
+}
+
+/**
+ * Remove all blur spans from the DOM by unwrapping them back to text nodes.
+ */
+function clearBlur(): void {
+  // Remove blur spans
+  document
+    .querySelectorAll('[data-ai-shield="true"].ai-blur')
+    .forEach((span) => {
+      const parent = span.parentNode;
+      if (!parent) return;
+      while (span.firstChild) {
+        parent.insertBefore(span.firstChild, span);
+      }
+      parent.removeChild(span);
+    });
+
+  // Remove container-level class
+  document
+    .querySelectorAll(".ai-blurred")
+    .forEach((el) => el.classList.remove("ai-blurred"));
+}
+
+/**
+ * Single source of truth for blur state.
+ * Re-reads settings from persistent storage, clears existing blur,
+ * then iterates ALL activeContainers to apply blur based on each
+ * container's persisted score vs the current threshold.
+ *
+ * Called when: threshold changes, toggle changes, new AI results arrive.
+ * Does NOT depend on currentAnalysis or backend response timing.
+ */
+async function recalculateBlur(): Promise<void> {
+  if (!chrome?.runtime?.id) {
+    teardown();
+    return;
+  }
+
+  try {
+    // Always reload settings from storage — never trust stale in-memory state
+    settings = await loadSettings();
+
+    // Step 1: Remove all existing blur
+    clearBlur();
+
+    // Step 2: If autoBlur is OFF, we're done — all blur removed
+    if (!settings.autoBlur) {
+      log(`Blur recalculated. autoBlur=OFF → all blur removed.`);
+      return;
+    }
+
+    // Step 3: Iterate all containers and apply blur to scored ones above threshold
+    let totalBlurred = 0;
+    for (const [, container] of activeContainers) {
+      if (container.score < 0) continue; // Not yet scored
+      totalBlurred += applyBlurToContainer(container);
+    }
+
+    log(
+      `Blur recalculated. autoBlur=ON, threshold ${settings.threshold}%, blurred ${totalBlurred} spans across ${activeContainers.size} containers.`,
+    );
+  } catch (err: any) {
+    if (err?.message?.includes("Extension context invalidated")) {
+      teardown();
+    } else {
+      console.warn("🛡️ [AI Shield] Blur recalculation error:", err);
+    }
+  }
 }
 
 function highlightItemOnPage(preview: string, itemScore?: ContentScore): void {
@@ -657,67 +776,98 @@ function updateBadge(score: number | null): void {
 
 async function scanNewContainers(): Promise<void> {
   if (isAnalyzing) return;
-
-  settings = await loadSettings();
-  if (!settings.privacyConsent) {
-    log("Privacy consent not given, skipping scan.");
-    return;
-  }
-
-  const newContainers = extractNewContainers();
-  log(
-    `Scan found ${newContainers.length} new containers (${activeContainers.size} total tracked).`,
-  );
-
-  if (newContainers.length === 0) {
-    // No new content — just ensure badge is present
-    ensureBadge();
-    if (!currentAnalysis) updateBadge(null);
-    return;
-  }
-
-  isAnalyzing = true;
-  updateBadge(null); // Show "Scanning..."
-
-  // Extract images (viewport-only)
-  // We don't have compressImages in this file, but it's imported.
-  // We'll assume it works as before or we'll mock if it's missing.
-
-  // For this resolved version, we'll just send text for now if images fail
-  const message: ExtensionMessage = {
-    type: "EXTRACT_CONTENT",
-    payload: {
-      url: window.location.href,
-      title: document.title,
-      containers: newContainers,
-      images: [], // Images handled separately or via another utility
-    },
-  };
-
-  const response = await safeSendMessage<PageAnalysis>(message);
-  isAnalyzing = false;
-
-  if (response === null) {
-    log("Extraction message failed or context dead.");
-    updateBadge(null);
+  if (!chrome?.runtime?.id) {
     teardown();
     return;
   }
 
-  handleAnalysisResult(response, newContainers);
+  try {
+    settings = await loadSettings();
+    if (!settings.privacyConsent) {
+      log("Privacy consent not given, skipping scan.");
+      return;
+    }
+
+    const newContainers = extractNewContainers();
+    log(
+      `Scan found ${newContainers.length} new containers (${activeContainers.size} total tracked).`,
+    );
+
+    if (newContainers.length === 0) {
+      // No new content — just ensure badge is present
+      ensureBadge();
+      if (!currentAnalysis) updateBadge(null);
+      return;
+    }
+
+    isAnalyzing = true;
+    updateBadge(null); // Show "Scanning..."
+
+    // Extract images (viewport-only)
+    // We don't have compressImages in this file, but it's imported.
+    // We'll assume it works as before or we'll mock if it's missing.
+
+    // For this resolved version, we'll just send text for now if images fail
+    const message: ExtensionMessage = {
+      type: "EXTRACT_CONTENT",
+      payload: {
+        url: window.location.href,
+        title: document.title,
+        containers: newContainers,
+        images: [], // Images handled separately or via another utility
+      },
+    };
+
+    const response = await safeSendMessage<PageAnalysis>(message);
+    isAnalyzing = false;
+
+    if (response === null) {
+      log("Backend message failed. Keeping existing scores and blur state.");
+      updateBadge(null);
+      // Do NOT teardown or clear activeContainers — existing scores remain valid
+      return;
+    }
+
+    handleAnalysisResult(response, newContainers);
+  } catch (err: any) {
+    isAnalyzing = false;
+    if (err?.message?.includes("Extension context invalidated")) {
+      teardown();
+    } else {
+      console.error("[AI Shield] Scan error:", err);
+    }
+  }
 }
 
 function handleAnalysisResult(
   analysis: PageAnalysis,
-  newContainers: Array<{ id: string; text: string }>,
+  _newContainers: Array<{ id: string; text: string }>,
 ): void {
   currentAnalysis = analysis;
   updateBadge(analysis.overallScore);
 
-  // Auto-blur if enabled
-  if (settings?.autoBlur) {
-    applyBlur(analysis);
+  // ── Persist scores onto each container in activeContainers ──
+  // This decouples blur from the transient backend response object.
+  // Scores survive even if future backend calls fail.
+  for (const item of analysis.items) {
+    if (item.type !== "text") continue;
+    const container = activeContainers.get(item.id);
+    if (container) {
+      container.score = normalizeScore(item.score);
+      // If the model gives a document-level score without specific ranges,
+      // fallback to blurring the entire container.
+      if (item.flaggedRanges && item.flaggedRanges.length > 0) {
+        container.flaggedRanges = item.flaggedRanges;
+      } else {
+        container.flaggedRanges = [
+          { start: 0, end: container.flatText.length },
+        ];
+      }
+    }
   }
+
+  // Always recalculate blur when new results arrive
+  recalculateBlur();
 
   log(`Analysis received. Overall score: ${analysis.overallScore}%`);
 }
@@ -729,6 +879,10 @@ function handleAnalysisResult(
 function startUrlObserver(): void {
   if (urlObserver) return;
   urlObserver = new MutationObserver(() => {
+    if (!chrome?.runtime?.id) {
+      teardown();
+      return;
+    }
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       if (urlDebounceTimer) clearTimeout(urlDebounceTimer);
@@ -745,6 +899,10 @@ function startUrlObserver(): void {
 function startContentObserver(): void {
   if (contentObserver) return;
   contentObserver = new MutationObserver((mutations) => {
+    if (!chrome?.runtime?.id) {
+      teardown();
+      return;
+    }
     // Only care about added nodes (new content)
     let hasNewContent = false;
     for (const mutation of mutations) {
@@ -783,6 +941,10 @@ function startContentObserver(): void {
 function startBadgeGuard(): void {
   if (badgeCheckInterval) return;
   badgeCheckInterval = setInterval(() => {
+    if (!chrome?.runtime?.id) {
+      teardown();
+      return;
+    }
     if (!document.getElementById("ai-shield-badge") && document.body) {
       log("Badge was removed — reattaching.");
       badgeElement = null;
@@ -834,9 +996,12 @@ try {
           break;
 
         case "BLUR_CONTENT":
-          if (currentAnalysis) applyBlur(currentAnalysis);
-          sendResponse({ ok: true });
-          break;
+          recalculateBlur().then(() => sendResponse({ ok: true }));
+          return true; // async
+
+        case "RECALCULATE_BLUR":
+          recalculateBlur().then(() => sendResponse({ ok: true }));
+          return true; // async
 
         case "INJECT_DOTS":
           // Logic for search dots (placeholder for actual implementation)
@@ -873,29 +1038,39 @@ try {
 // ──────────────────────────────────────────────────────────
 
 async function initializeExtension(): Promise<void> {
-  settings = await loadSettings();
-  if (!settings.privacyConsent) {
-    log("Privacy consent not given, extension inactive.");
-    return;
+  if (!chrome?.runtime?.id) return;
+
+  try {
+    settings = await loadSettings();
+    if (!settings.privacyConsent) {
+      log("Privacy consent not given, extension inactive.");
+      return;
+    }
+
+    log(`Initializing. URL: ${location.href}`);
+
+    injectStyles();
+    ensureBadge();
+    startUrlObserver();
+
+    // Delay content observer slightly so initial DOM is settled
+    setTimeout(() => startContentObserver(), 500);
+
+    // Start badge guard
+    startBadgeGuard();
+
+    // Initial scan
+    setTimeout(() => {
+      log("Running initial scan...");
+      scanNewContainers();
+    }, 1200);
+  } catch (err: any) {
+    if (err?.message?.includes("Extension context invalidated")) {
+      teardown();
+    } else {
+      console.error("[AI Shield] Initialization error:", err);
+    }
   }
-
-  log(`Initializing. URL: ${location.href}`);
-
-  injectStyles();
-  ensureBadge();
-  startUrlObserver();
-
-  // Delay content observer slightly so initial DOM is settled
-  setTimeout(() => startContentObserver(), 500);
-
-  // Start badge guard
-  startBadgeGuard();
-
-  // Initial scan
-  setTimeout(() => {
-    log("Running initial scan...");
-    scanNewContainers();
-  }, 1200);
 }
 
 // ──────────────────────────────────────────────────────────
