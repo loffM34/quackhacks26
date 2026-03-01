@@ -1,281 +1,320 @@
 // ──────────────────────────────────────────────────────────
-// API Provider — External AI detection APIs
+// API Provider — Clean rewrite with retry, chunking, fallback
 // ──────────────────────────────────────────────────────────
-// Calls hosted detection services (GPTZero, Originality.ai,
-// Sapling, HuggingFace). Supports multiple APIs via config.
-// For hackathon MVP: uses GPTZero by default with fallback to
-// HuggingFace Inference API.
-//
-// API_PROVIDER_NAME env var selects which API to call.
 
 import axios from "axios";
 import { config } from "../config.js";
 
-/**
- * API Provider — implements the detectProvider interface.
- * Delegates to the configured external API.
- */
-export const apiProvider = {
-  /**
-   * Analyze text using an external AI detection API.
-   * @param text — text to analyze
-   * @returns { score: 0–1 probability, provider: string, details?: object }
-   */
-  async analyzeText(text) {
-    const apiName = config.apiProviderName;
+// ──────────────────────────────────────────────────────────
+// Public interface
+// ──────────────────────────────────────────────────────────
 
-    switch (apiName) {
-      case "gptzero":
-        return callGptZero(text);
-      case "sapling":
-        return callSapling(text);
-      case "huggingface":
-        return callHuggingFace(text);
-      case "originality":
-        return callOriginality(text);
-      default:
-        // Fallback: return a mock score for development
-        console.warn(
-          `[apiProvider] Unknown API "${apiName}", returning mock score`,
-        );
-        return mockTextScore(text);
-    }
+export const apiProvider = {
+  async analyzeText(text) {
+    return detectWithProvider(text);
   },
 
-  /**
-   * Analyze an image using an external AI detection API.
-   * Image detection APIs are less common — for MVP, use HuggingFace
-   * or return a mock score.
-   * @param imageData — base64 data URI
-   * @returns { score: 0–1, provider: string }
-   */
   async analyzeImage(imageData) {
     try {
       return await callHuggingFaceImage(imageData);
-    } catch {
-      // Fallback mock for hackathon
-      return mockImageScore();
+    } catch (err) {
+      console.warn("[provider] Image analysis failed:", err.message);
+      return fallback("image_error", err.message);
     }
   },
 };
 
 // ──────────────────────────────────────────────────────────
-// Individual API implementations
+// Core detection — retry + chunking
 // ──────────────────────────────────────────────────────────
 
 /**
- * GPTZero API — https://gptzero.me/docs
- * POST https://api.gptzero.me/v2/predict/text
+ * detectWithProvider(text)
+ *
+ * 1. Sanitize input
+ * 2. If short enough → single call with retry
+ * 3. If long → chunk into maxChunkSize blocks, call each, average scores
+ * 4. Never throws — always returns a result
  */
-async function callGptZero(text) {
-  const apiKey = config.gptZeroApiKey;
-  if (!apiKey) return mockTextScore(text);
-
-  try {
-    const response = await axios.post(
-      "https://api.gptzero.me/v2/predict/text",
-      { document: text },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-        },
-        timeout: 10000,
-      },
-    );
-
-    const data = response.data;
-    // GPTZero returns completely_generated_prob (0–1)
-    const score = data?.documents?.[0]?.completely_generated_prob ?? 0;
-
-    return {
-      score,
-      provider: "gptzero",
-      details: {
-        sentences: data?.documents?.[0]?.sentences?.map((s) => ({
-          text: s.sentence,
-          score: s.generated_prob,
-        })),
-      },
-    };
-  } catch (err) {
-    console.error("[apiProvider] GPTZero error:", err.message);
-    throw err;
+async function detectWithProvider(text) {
+  // Sanitize
+  const clean = sanitize(text);
+  if (!clean || clean.length < 20) {
+    return fallback("empty_input", "Text too short or empty");
   }
-}
 
-/**
- * Sapling AI Detector — https://sapling.ai/docs/api/detector
- * POST https://api.sapling.ai/api/v1/aidetect
- */
-async function callSapling(text) {
-  const apiKey = config.saplingApiKey;
-  if (!apiKey) return mockTextScore(text);
+  // Chunk if needed
+  const chunks = chunkText(clean, config.maxChunkSize);
+  console.log(
+    `[provider] Analyzing ${chunks.length} chunk(s), total ${clean.length} chars`,
+  );
 
-  try {
-    const response = await axios.post(
-      "https://api.sapling.ai/api/v1/aidetect",
-      { key: apiKey, text },
-      { timeout: 10000 },
-    );
+  const results = [];
 
-    const score = response.data?.score ?? 0;
-    return {
-      score,
-      provider: "sapling",
-      details: { sentence_scores: response.data?.sentence_scores },
-    };
-  } catch (err) {
-    console.error("[apiProvider] Sapling error:", err.message);
-    throw err;
+  for (const chunk of chunks) {
+    const result = await callWithRetry(chunk);
+    results.push(result);
   }
-}
 
-/**
- * HuggingFace Inference API — text classification
- * Uses a public AI-detection model (e.g., roberta-base-openai-detector)
- */
-async function callHuggingFace(text) {
-  const apiKey = config.huggingfaceApiKey;
-  const model = "openai-community/roberta-base-openai-detector";
-
-  try {
-    const response = await axios.post(
-      `https://api-inference.huggingface.co/models/${model}`,
-      { inputs: text.slice(0, 1024) }, // model input limit
-      {
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        timeout: 15000,
-      },
-    );
-
-    // HuggingFace returns [[{ label, score }]] where label is "Fake" or "Real"
-    const predictions = response.data?.[0] || [];
-    const fakeScore = predictions.find((p) => p.label === "Fake")?.score ?? 0;
-
-    return {
-      score: fakeScore,
-      provider: "huggingface",
-      details: { predictions },
-    };
-  } catch (err) {
-    console.error("[apiProvider] HuggingFace error:", err.message);
-    throw err;
+  // Average scores
+  if (results.length === 0) {
+    return fallback("no_results", "No chunks produced results");
   }
-}
 
-/**
- * Originality.ai — https://docs.originality.ai
- * POST https://api.originality.ai/api/v1/scan/ai
- */
-async function callOriginality(text) {
-  const apiKey = config.originalityApiKey;
-  if (!apiKey) return mockTextScore(text);
+  const avgScore =
+    results.reduce((sum, r) => sum + r.score, 0) / results.length;
+  const provider = results[0].provider;
 
-  try {
-    const response = await axios.post(
-      "https://api.originality.ai/api/v1/scan/ai",
-      { content: text },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-OAI-API-KEY": apiKey,
-        },
-        timeout: 10000,
-      },
-    );
-
-    const score = response.data?.score?.ai ?? 0;
-    return {
-      score,
-      provider: "originality",
-      details: response.data,
-    };
-  } catch (err) {
-    console.error("[apiProvider] Originality error:", err.message);
-    throw err;
-  }
-}
-
-/**
- * HuggingFace image classification for AI-generated image detection
- */
-async function callHuggingFaceImage(imageData) {
-  const apiKey = config.huggingfaceApiKey;
-  // Use an AI-image-detection model
-  const model = "umm-maybe/AI-image-detector";
-
-  // Convert base64 data URI to raw binary
-  const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
-  const buffer = Buffer.from(base64Data, "base64");
-
-  try {
-    const response = await axios.post(
-      `https://api-inference.huggingface.co/models/${model}`,
-      buffer,
-      {
-        headers: {
-          "Content-Type": "application/octet-stream",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        timeout: 15000,
-      },
-    );
-
-    // Returns [{ label, score }] — look for "artificial" label
-    const predictions = response.data || [];
-    const aiScore =
-      predictions.find(
-        (p) =>
-          p.label?.toLowerCase().includes("artificial") ||
-          p.label?.toLowerCase().includes("ai"),
-      )?.score ?? 0;
-
-    return {
-      score: aiScore,
-      provider: "huggingface-image",
-      details: { predictions },
-    };
-  } catch (err) {
-    console.error("[apiProvider] HuggingFace image error:", err.message);
-    throw err;
-  }
-}
-
-// ──────────────────────────────────────────────────────────
-// Mock scores for development (when no API keys are configured)
-// ──────────────────────────────────────────────────────────
-
-function mockTextScore(text) {
-  // Generate a deterministic but varied mock score based on text length
-  const hash = simpleHash(text);
-  const score = ((hash % 80) + 10) / 100; // 0.10 – 0.90
   return {
-    score,
-    provider: "mock",
+    score: avgScore,
+    provider,
     details: {
-      note: "Mock score — configure API keys for real detection",
+      chunks: results.length,
+      chunkScores: results.map((r) => r.score),
     },
   };
 }
 
-function mockImageScore() {
-  const score = Math.random() * 0.6 + 0.2; // 0.20 – 0.80
+// ──────────────────────────────────────────────────────────
+// Retry with exponential backoff
+// ──────────────────────────────────────────────────────────
+
+async function callWithRetry(text) {
+  const maxRetries = config.maxRetries;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await callProvider(text);
+    } catch (err) {
+      const isLast = attempt === maxRetries;
+      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+
+      if (isLast) {
+        console.error(
+          `[provider] All ${maxRetries + 1} attempts failed: ${err.message}`,
+        );
+        return fallback("all_retries_failed", err.message);
+      }
+
+      console.warn(
+        `[provider] Attempt ${attempt + 1} failed (${err.message}), retrying in ${delay}ms...`,
+      );
+      await sleep(delay);
+    }
+  }
+
+  return fallback("unexpected", "Retry loop exited unexpectedly");
+}
+
+// ──────────────────────────────────────────────────────────
+// Provider dispatcher
+// ──────────────────────────────────────────────────────────
+
+async function callProvider(text) {
+  const apiName = config.apiProviderName;
+
+  switch (apiName) {
+    case "gptzero":
+      return callGptZero(text);
+    case "sapling":
+      return callSapling(text);
+    case "huggingface":
+      return callHuggingFace(text);
+    case "originality":
+      return callOriginality(text);
+    default:
+      console.warn(`[provider] Unknown API "${apiName}"`);
+      return fallback("unknown_provider", `No provider named "${apiName}"`);
+  }
+}
+
+// ──────────────────────────────────────────────────────────
+// HuggingFace — primary provider
+// ──────────────────────────────────────────────────────────
+
+async function callHuggingFace(text) {
+  const apiKey = config.huggingfaceApiKey;
+  const model = "openai-community/roberta-base-openai-detector";
+
+  const response = await axios.post(
+    `https://router.huggingface.co/hf-inference/models/${model}`,
+    { inputs: text.slice(0, 1024) },
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      timeout: config.apiTimeout,
+    },
+  );
+
+  const predictions = response.data?.[0] || [];
+  const fakeScore = predictions.find((p) => p.label === "Fake")?.score ?? 0;
+
   return {
-    score,
-    provider: "mock",
-    details: { note: "Mock score — configure API keys for real detection" },
+    score: fakeScore,
+    provider: "huggingface",
+    details: { predictions },
   };
 }
 
-function simpleHash(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
+// ──────────────────────────────────────────────────────────
+// GPTZero
+// ──────────────────────────────────────────────────────────
+
+async function callGptZero(text) {
+  const apiKey = config.gptZeroApiKey;
+  if (!apiKey) return fallback("no_api_key", "GPTZero API key not configured");
+
+  const response = await axios.post(
+    "https://api.gptzero.me/v2/predict/text",
+    { document: text },
+    {
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+      timeout: config.apiTimeout,
+    },
+  );
+
+  const score = response.data?.documents?.[0]?.completely_generated_prob ?? 0;
+  return {
+    score,
+    provider: "gptzero",
+    details: {
+      sentences: response.data?.documents?.[0]?.sentences?.map((s) => ({
+        text: s.sentence,
+        score: s.generated_prob,
+      })),
+    },
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// Sapling
+// ──────────────────────────────────────────────────────────
+
+async function callSapling(text) {
+  const apiKey = config.saplingApiKey;
+  if (!apiKey) return fallback("no_api_key", "Sapling API key not configured");
+
+  const response = await axios.post(
+    "https://api.sapling.ai/api/v1/aidetect",
+    { key: apiKey, text },
+    { timeout: config.apiTimeout },
+  );
+
+  return {
+    score: response.data?.score ?? 0,
+    provider: "sapling",
+    details: { sentence_scores: response.data?.sentence_scores },
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// Originality
+// ──────────────────────────────────────────────────────────
+
+async function callOriginality(text) {
+  const apiKey = config.originalityApiKey;
+  if (!apiKey)
+    return fallback("no_api_key", "Originality API key not configured");
+
+  const response = await axios.post(
+    "https://api.originality.ai/api/v1/scan/ai",
+    { content: text },
+    {
+      headers: { "Content-Type": "application/json", "X-OAI-API-KEY": apiKey },
+      timeout: config.apiTimeout,
+    },
+  );
+
+  return {
+    score: response.data?.score?.ai ?? 0,
+    provider: "originality",
+    details: response.data,
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// HuggingFace Image
+// ──────────────────────────────────────────────────────────
+
+async function callHuggingFaceImage(imageData) {
+  const apiKey = config.huggingfaceApiKey;
+  const model = "umm-maybe/AI-image-detector";
+
+  const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
+  const buffer = Buffer.from(base64Data, "base64");
+
+  const response = await axios.post(
+    `https://router.huggingface.co/hf-inference/models/${model}`,
+    buffer,
+    {
+      headers: {
+        "Content-Type": "application/octet-stream",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      timeout: config.apiTimeout,
+    },
+  );
+
+  const predictions = response.data || [];
+  const aiScore =
+    predictions.find(
+      (p) =>
+        p.label?.toLowerCase().includes("artificial") ||
+        p.label?.toLowerCase().includes("ai"),
+    )?.score ?? 0;
+
+  return {
+    score: aiScore,
+    provider: "huggingface-image",
+    details: { predictions },
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────
+
+function sanitize(text) {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .replace(/\s+/g, " ") // collapse whitespace
+    .replace(/\n+/g, " ") // collapse newlines
+    .trim()
+    .slice(0, config.maxInputLength);
+}
+
+function chunkText(text, maxSize) {
+  if (text.length <= maxSize) return [text];
+
+  const chunks = [];
+  // Try to split on sentence boundaries
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  let current = "";
+
+  for (const sentence of sentences) {
+    if ((current + sentence).length > maxSize && current.length > 0) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current += sentence;
+    }
   }
-  return Math.abs(hash);
+  if (current.trim()) chunks.push(current.trim());
+
+  return chunks;
+}
+
+function fallback(reason, detail) {
+  return {
+    score: 0,
+    provider: "fallback",
+    reason,
+    details: { note: detail },
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

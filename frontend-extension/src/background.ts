@@ -162,12 +162,15 @@ async function handleExtraction(
 
 /**
  * Handle manual "Analyze" button press — extract and analyze the active tab.
+ * The flow: trigger content script → it extracts → sends EXTRACT_CONTENT back
+ * to background → handleExtraction runs → stores in session storage.
+ * We poll session storage for the fresh result.
  */
 async function handleManualAnalysis(
   tabId?: number,
 ): Promise<PageAnalysis | null> {
   if (!tabId) {
-    // Get the active tab
+    // Get the active tab (popup/sidepanel don't have sender.tab)
     const [tab] = await chrome.tabs.query({
       active: true,
       currentWindow: true,
@@ -182,16 +185,41 @@ async function handleManualAnalysis(
     chrome.tabs.sendMessage(
       tabId!,
       { type: "EXTRACT_CONTENT_TRIGGER" },
-      (response) => {
+      (_response) => {
         if (chrome.runtime.lastError) {
           console.warn(
             "[AI Shield BG] Manual analysis trigger failed:",
             chrome.runtime.lastError.message,
           );
           resolve(null);
-        } else {
-          resolve(response);
+          return;
         }
+
+        // The content script will send EXTRACT_CONTENT back to us,
+        // which handleExtraction processes and stores in session storage.
+        // Poll for the result (it takes 1-3 seconds for the backend call).
+        const pollKey = `tab_${tabId}`;
+        let attempts = 0;
+        const maxAttempts = 15; // 15 * 500ms = 7.5s max wait
+
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const stored = await chrome.storage.session.get(pollKey);
+            const result = stored[pollKey] as PageAnalysis | undefined;
+            if (result && Date.now() - result.analyzedAt < 10000) {
+              // Fresh result found
+              clearInterval(poll);
+              resolve(result);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(poll);
+              resolve(null);
+            }
+          } catch {
+            clearInterval(poll);
+            resolve(null);
+          }
+        }, 500);
       },
     );
   });
@@ -234,56 +262,50 @@ async function handleUpdateSettings(
 // ──────────────────────────────────────────────────────────
 
 /**
- * Send text paragraphs to the backend for AI detection scoring.
- * Batches all paragraphs in a single request for efficiency.
+ * Send each paragraph to the backend individually for per-paragraph scoring.
+ * This gives accurate per-paragraph scores instead of one blended score.
  */
 async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
   if (paragraphs.length === 0) return [];
 
-  try {
-    // Send combined text (join paragraphs with separator)
-    const combinedText = paragraphs.join("\n\n");
+  const scores: ContentScore[] = [];
 
-    // Limit to 5000 characters total to stay within API limits
-    const truncated = combinedText.slice(0, 5000);
+  // Send paragraphs individually (limit to 10 to avoid rate limiting)
+  const toAnalyze = paragraphs.slice(0, 10);
 
-    const response = await fetch(`${backendUrl}/detect/text`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: truncated, url: "" }),
-    });
+  for (let i = 0; i < toAnalyze.length; i++) {
+    const paragraph = toAnalyze[i].slice(0, 2000); // enforce max length
+    if (paragraph.length < 50) continue; // skip short fragments
 
-    if (!response.ok) {
-      console.error("[AI Shield BG] Backend text API error:", response.status);
-      return [];
-    }
+    try {
+      const response = await fetch(`${backendUrl}/detect/text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: paragraph }),
+      });
 
-    const data: DetectTextResponse = await response.json();
+      if (!response.ok) {
+        console.warn(
+          `[AI Shield BG] Backend returned ${response.status} for paragraph ${i}`,
+        );
+        continue;
+      }
 
-    // Map to ContentScore items (one per paragraph if details available,
-    // otherwise one overall score)
-    if (data.details?.sentences && data.details.sentences.length > 0) {
-      return data.details.sentences.slice(0, paragraphs.length).map((s, i) => ({
+      const data: DetectTextResponse = await response.json();
+
+      scores.push({
         id: `text-${i}`,
         type: "text" as const,
-        score: Math.round(s.score * 100),
-        preview: s.text.slice(0, 100),
+        score: Math.round(data.score * 100),
+        preview: paragraph.slice(0, 100),
         provider: data.provider,
-      }));
+      });
+    } catch (err) {
+      console.warn(`[AI Shield BG] Failed to analyze paragraph ${i}:`, err);
     }
-
-    // Single overall score — apply to each paragraph
-    return paragraphs.map((p, i) => ({
-      id: `text-${i}`,
-      type: "text" as const,
-      score: Math.round(data.score * 100),
-      preview: p.slice(0, 100),
-      provider: data.provider,
-    }));
-  } catch (err) {
-    console.error("[AI Shield BG] Failed to analyze text:", err);
-    return [];
   }
+
+  return scores;
 }
 
 /**

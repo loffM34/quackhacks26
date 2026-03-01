@@ -9,23 +9,20 @@ export const config = {
   logLevel: process.env.LOG_LEVEL || "info",
 
   // ── Provider selection ──
-  // Set DETECT_PROVIDER=api to use external APIs (hackathon default)
-  // Set DETECT_PROVIDER=python to use local FastAPI model service
   detectProvider: process.env.DETECT_PROVIDER || "api",
 
-  // ── External API keys (only for api provider) ──
-  // Supports GPTZero, Originality.ai, Sapling, or HuggingFace
-  apiProviderName: process.env.API_PROVIDER_NAME || "gptzero",
+  // ── External API keys ──
+  apiProviderName: process.env.API_PROVIDER_NAME || "huggingface",
   gptZeroApiKey: process.env.GPTZERO_API_KEY || "",
   originalityApiKey: process.env.ORIGINALITY_API_KEY || "",
   saplingApiKey: process.env.SAPLING_API_KEY || "",
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY || "",
 
-  // ── Python model service URL (only for python provider) ──
+  // ── Python model service URL ──
   modelServiceUrl: process.env.MODEL_SERVICE_URL || "http://localhost:8000",
 
   // ── Cache settings ──
-  cacheTtlMs: parseInt(process.env.CACHE_TTL_MS || "600000", 10), // 10 minutes
+  cacheTtlMs: parseInt(process.env.CACHE_TTL_MS || "600000", 10),
   cacheMaxSize: parseInt(process.env.CACHE_MAX_SIZE || "500", 10),
 
   // ── Rate limiting ──
@@ -38,5 +35,11 @@ export const config = {
 
   // ── Content limits ──
   maxTextLength: parseInt(process.env.MAX_TEXT_LENGTH || "5000", 10),
-  maxImageSizeBytes: parseInt(process.env.MAX_IMAGE_SIZE || "2097152", 10), // 2MB
+  maxImageSizeBytes: parseInt(process.env.MAX_IMAGE_SIZE || "2097152", 10),
+
+  // ── Chunking & retry (NEW) ──
+  maxInputLength: 2000, // max chars accepted from client
+  maxChunkSize: 1000, // chars per chunk sent to HuggingFace
+  apiTimeout: 30000, // axios timeout in ms
+  maxRetries: 2, // retry attempts with exponential backoff
 };
