@@ -17,7 +17,42 @@ import type {
   ExtractedContainerData,
   PageExtraction,
 } from "./types";
-import { safeSendMessage } from "./utils/api";
+
+/**
+ * Safely send a message to the background service worker.
+ * Inlined here to prevent Vite from code-splitting and outputting ES modules
+ * which are unsupported in Manifest V3 content scripts without dynamic imports.
+ */
+async function safeSendMessage<T = any>(
+  message: ExtensionMessage,
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    if (!chrome?.runtime?.id) {
+      console.warn(
+        "🛡️ [AI Shield] Extension context invalidated. Ignoring message.",
+      );
+      return resolve(null);
+    }
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "🛡️ [AI Shield] Background message error:",
+            chrome.runtime.lastError.message,
+          );
+          return resolve(null);
+        }
+        resolve(response as T);
+      });
+    } catch (error) {
+      console.warn(
+        "🛡️ [AI Shield] Sync message error, context likely dead:",
+        error,
+      );
+      resolve(null);
+    }
+  });
+}
 
 // ──────────────────────────────────────────────────────────
 // § STATE
@@ -134,20 +169,16 @@ function isExcluded(el: Element): boolean {
 }
 
 async function loadSettings(): Promise<ShieldSettings> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get("settings", (result) => {
-      resolve(
-        result.settings || {
-          threshold: 70,
-          autoBlur: false,
-          elderMode: false,
-          privacyConsent: true,
-          showSearchDots: true,
-          backendUrl: "http://localhost:3001",
-        },
-      );
-    });
-  });
+  const result = await chrome.storage.local.get("settings");
+  const DEFAULT_SETTINGS: ShieldSettings = {
+    threshold: 70,
+    autoBlur: false,
+    elderMode: false,
+    privacyConsent: true,
+    showSearchDots: true,
+    backendUrl: "http://localhost:3001",
+  };
+  return { ...DEFAULT_SETTINGS, ...(result.settings || {}) };
 }
 
 function normalizeScore(score: number): number {

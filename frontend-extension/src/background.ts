@@ -25,7 +25,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 let backendUrl = "http://localhost:3001";
 
 // ── Load settings on startup ──
-chrome.storage.sync.get("settings", (result) => {
+chrome.storage.local.get("settings").then((result) => {
   if (result.settings?.backendUrl) {
     backendUrl = result.settings.backendUrl;
   }
@@ -250,9 +250,24 @@ async function handleGetResult(tabId?: number): Promise<PageAnalysis | null> {
 async function handleUpdateSettings(
   partial: Partial<ShieldSettings>,
 ): Promise<void> {
-  const current = await chrome.storage.sync.get("settings");
-  const updated = { ...(current.settings || {}), ...partial };
-  await chrome.storage.sync.set({ settings: updated });
+  const current = await chrome.storage.local.get("settings");
+
+  // Default values to ensure a complete object is always saved
+  const DEFAULT_SETTINGS: ShieldSettings = {
+    threshold: 70,
+    autoBlur: false,
+    elderMode: false,
+    privacyConsent: true,
+    showSearchDots: true,
+    backendUrl: "http://localhost:3001",
+  };
+
+  const updated = {
+    ...DEFAULT_SETTINGS,
+    ...(current.settings || {}),
+    ...partial,
+  };
+  await chrome.storage.local.set({ settings: updated });
 
   if (updated.backendUrl) {
     backendUrl = updated.backendUrl;

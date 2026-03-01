@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────────────────
 
 import type { ExtensionMessage, PageAnalysis, ShieldSettings } from "@/types";
+import { DEFAULT_SETTINGS } from "@/types";
 
 /**
  * Safely send a message to the background service worker.
@@ -79,20 +80,8 @@ export async function updateSettings(
  * Load settings from chrome.storage.sync.
  */
 export async function loadSettings(): Promise<ShieldSettings> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get("settings", (result) => {
-      resolve(
-        result.settings || {
-          threshold: 70,
-          autoBlur: false,
-          elderMode: false,
-          privacyConsent: true,
-          showSearchDots: true,
-          backendUrl: "http://localhost:3001",
-        },
-      );
-    });
-  });
+  const result = await chrome.storage.local.get("settings");
+  return { ...DEFAULT_SETTINGS, ...(result.settings || {}) };
 }
 
 // ──────────────────────────────────────────────────────────
