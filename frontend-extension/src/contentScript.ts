@@ -1,8 +1,5 @@
 // ──────────────────────────────────────────────────────────
-<<<<<<< HEAD
-// Content Script — localized text/image detection
-// ──────────────────────────────────────────────────────────
-=======
+
 // Content Script — AI Content Shield (Architectural Rewrite)
 // ──────────────────────────────────────────────────────────
 // Clean rewrite. Key principles:
@@ -12,7 +9,6 @@
 //   - Google Docs iframe support
 //   - SPA-safe MutationObserver
 //   - Analysis only on user action
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
 
 import { extractPageContent } from "./utils/domExtractor";
 import { compressImages } from "./utils/imageCompressor";
@@ -43,152 +39,7 @@ let settings: ShieldSettings | null = null;
 let badgeElement: HTMLElement | null = null;
 let isAnalyzing = false;
 
-<<<<<<< HEAD
-const INIT_DELAY_MS = 1500;
 
-// ──────────────────────────────────────────────────────────
-// Main init
-// ──────────────────────────────────────────────────────────
-
-async function init(): Promise<void> {
-  settings = await loadSettings();
-
-  if (!settings.privacyConsent) {
-    console.log("[AI Shield] Privacy consent not given, skipping analysis.");
-    return;
-  }
-
-  injectFloatingBadge(null);
-
-  const extraction = extractPageContent();
-
-  if (extraction.paragraphs.length === 0 && extraction.images.length === 0) {
-    console.log("[AI Shield] No meaningful content found on page.");
-    renderBadgeEmpty();
-    return;
-  }
-
-  const textChunks = buildTextChunks(extraction.paragraphs);
-  const compressedImages = await compressImages(extraction.images);
-  const imageInputs: ImageInput[] = compressedImages.map((image, idx) => ({
-    id: `img_${idx + 1}`,
-    image,
-  }));
-
-  try {
-    const [textResponse, imageResponse] = await Promise.all([
-      textChunks.length > 0
-        ? detectTextSpans(textChunks, settings.backendUrl)
-        : Promise.resolve<BackendDetectionResponse>({
-            score: 0,
-            provider: "none",
-            details: { results: [] },
-          }),
-      imageInputs.length > 0
-        ? detectImageBatch(imageInputs, settings.backendUrl)
-        : Promise.resolve<BackendDetectionResponse>({
-            score: 0,
-            provider: "none",
-            details: { results: [] },
-          }),
-    ]);
-
-    const analysis = toLocalizedPageAnalysis(textResponse, imageResponse);
-    handleAnalysisResult(analysis);
-  } catch (err) {
-    console.warn("[AI Shield] Analysis failed:", err);
-    renderBadgeError();
-  }
-}
-
-// ──────────────────────────────────────────────────────────
-// Transformation helpers
-// ──────────────────────────────────────────────────────────
-
-function buildTextChunks(paragraphs: string[]): TextChunkInput[] {
-  const chunks: TextChunkInput[] = [];
-  let counter = 1;
-
-  for (const paragraph of paragraphs) {
-    const clean = (paragraph || "").replace(/\s+/g, " ").trim();
-    if (clean.length < 20) continue;
-
-    const sentenceParts = clean
-      .split(/(?<=[.!?])\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length >= 20);
-
-    if (sentenceParts.length === 0) {
-      chunks.push({
-        id: `t_${counter++}`,
-        text: clean.slice(0, 1200),
-        kind: "paragraph",
-      });
-      continue;
-    }
-
-    for (const sentence of sentenceParts) {
-      chunks.push({
-        id: `t_${counter++}`,
-        text: sentence.slice(0, 1000),
-        kind: "sentence",
-      });
-    }
-  }
-
-  return chunks;
-}
-
-function toLocalizedPageAnalysis(
-  textResponse: BackendDetectionResponse,
-  imageResponse: BackendDetectionResponse,
-): LocalizedPageAnalysis {
-  const textResults = textResponse.details?.results ?? [];
-  const imageResults = imageResponse.details?.results ?? [];
-
-  const textScore = Math.round((textResponse.score ?? 0) * 100);
-  const imageScore = Math.round((imageResponse.score ?? 0) * 100);
-
-  let overallScore = 0;
-  if (textResults.length > 0 && imageResults.length > 0) {
-    overallScore = Math.round(textScore * 0.4 + imageScore * 0.6);
-  } else if (imageResults.length > 0) {
-    overallScore = imageScore;
-  } else if (textResults.length > 0) {
-    overallScore = textScore;
-  }
-
-  return {
-    overallScore,
-    textScore,
-    imageScore,
-    textResults,
-    imageResults,
-  };
-}
-
-// ──────────────────────────────────────────────────────────
-// Analysis handling
-// ──────────────────────────────────────────────────────────
-
-function handleAnalysisResult(analysis: LocalizedPageAnalysis): void {
-  currentAnalysis = analysis;
-
-  injectFloatingBadge(analysis.overallScore);
-
-  applyTextHighlights(analysis.textResults);
-  applyImageBadges(analysis.imageResults);
-
-  if (
-    settings?.autoBlur &&
-    analysis.overallScore > (settings?.threshold ?? 70)
-  ) {
-    applyContentBlur(analysis);
-  }
-
-  if (isGoogleSearchPage()) {
-    injectSearchDots();
-=======
 // ── Text-node map for precise highlighting ──
 interface TextNodeEntry {
   node: Text;
@@ -291,7 +142,6 @@ function extractVisibleText(): string[] {
       contentSelectors = selectors;
       break;
     }
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
   }
 
   // Fallback to generic content selectors
@@ -352,9 +202,7 @@ function extractVisibleText(): string[] {
 }
 
 // ──────────────────────────────────────────────────────────
-<<<<<<< HEAD
-// Badge UI
-=======
+
 // SECTION 2: Google Docs support
 // ──────────────────────────────────────────────────────────
 
@@ -1250,33 +1098,7 @@ chrome.runtime.onMessage.addListener(
 );
 
 // ──────────────────────────────────────────────────────────
-<<<<<<< HEAD
-// SPA support
-// ──────────────────────────────────────────────────────────
 
-let lastUrl = window.location.href;
-
-setInterval(() => {
-  if (window.location.href !== lastUrl) {
-    lastUrl = window.location.href;
-    console.log("[AI Shield] URL changed, re-initializing...");
-    if (badgeElement) badgeElement.remove();
-    badgeElement = null;
-    currentAnalysis = null;
-    setTimeout(init, Math.max(INIT_DELAY_MS, 1500));
-  }
-}, 1000);
-
-// ──────────────────────────────────────────────────────────
-// Start
-// ──────────────────────────────────────────────────────────
-
-if (document.readyState === "complete") {
-  setTimeout(init, INIT_DELAY_MS);
-} else {
-  window.addEventListener("load", () => setTimeout(init, INIT_DELAY_MS));
-}
-=======
 // SECTION 11: Initialization
 // ──────────────────────────────────────────────────────────
 
@@ -1319,4 +1141,3 @@ if (document.readyState === "complete") {
 } else {
   window.addEventListener("load", () => initBadge());
 }
->>>>>>> 4516d22a78a0a5300ab4466485ba584dc0640864
