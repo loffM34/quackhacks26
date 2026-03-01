@@ -13,11 +13,11 @@ Michael Dox, Michael Loff, Sarah Simbulan, Leonard Weber
 
 ## The Problem
 
-AI-generated content is everywhere — articles, social media posts, product reviews, academic submissions — and it's increasingly difficult to tell apart from human writing. Most people have no way to know whether what they're reading was written by a person or a machine. Existing detection tools require you to copy-paste text into a separate website, which is slow, disruptive, and impractical for casual browsing.
+For over 50,000 years, humans were the only source of art, information, language, and thought - until AI. Since it hit the mainstream, LLM's and other AI now contribute more to social media than humans do. It is growingly increasingly difficult to differentiate between ideas thought of by humans and those created by AI. Flare seeks to remedy this problem by serving as a live AI detector as you surf the web.
 
-## What AI Content Shield Does
+## What Flare Does
 
-AI Content Shield runs directly in your browser as a Chrome extension. It **passively analyzes every page you visit**, scoring text blocks and images for AI-generation probability. A small floating badge shows the overall score at a glance. For deeper inspection, a side panel breaks down every detected block with individual scores, confidence tiers, and explanations. Flagged content can be automatically blurred until you choose to reveal it.
+Flare runs directly in your browser as a Chrome extension. It **passively analyzes every page you visit**, scoring text blocks and images for AI-generation probability. A small floating badge shows the overall score at a glance. For deeper inspection, a side panel breaks down every detected block with individual scores, confidence tiers, and explanations. Flagged content can be automatically blurred until you choose to reveal it.
 
 It's designed to be **non-intrusive** — you install it once and it works silently in the background. No copy-pasting, no switching tabs, no manual effort.
 
