@@ -26,34 +26,36 @@ let settings: ShieldSettings | null = null;
 let badgeElement: HTMLElement | null = null;
 let isAnalyzing = false;
 
-// ── Text-node map for precise highlighting ──
+// ── Container mapping ──
 interface TextNodeEntry {
   node: Text;
   globalStart: number;
   globalEnd: number;
 }
-let textNodeMap: TextNodeEntry[] = [];
-let flatText = "";
+
+interface ExtractedContainer {
+  id: string; // unique ID
+  element: Element;
+  flatText: string;
+  textNodeMap: TextNodeEntry[];
+}
+
+let activeContainers = new Map<string, ExtractedContainer>();
 
 // ──────────────────────────────────────────────────────────
-// SECTION 1: Visible text extraction
+// SECTION 1: Visible text extraction per container
 // ──────────────────────────────────────────────────────────
 
 /** Content selectors for specific platforms */
 const PLATFORM_SELECTORS: Record<string, string[]> = {
   "linkedin.com": [
     ".feed-shared-update-v2__description",
-    ".feed-shared-text",
-    ".feed-shared-inline-show-more-text",
+    ".feed-shared-text__text-view",
   ],
-  "facebook.com": [
-    'div[role="article"]',
-    '[data-ad-preview="message"]',
-    ".userContent",
-  ],
-  "instagram.com": ["article div > span", "._a9zs"],
-  "twitter.com": ['[data-testid="tweetText"]', ".tweet-text"],
-  "x.com": ['[data-testid="tweetText"]'],
+  "facebook.com": ['div[role="article"]'],
+  "instagram.com": ["article"],
+  "twitter.com": ['[data-testid="tweet"]'],
+  "x.com": ['[data-testid="tweet"]'],
 };
 
 /** Elements to always exclude */
@@ -75,13 +77,7 @@ const EXCLUDE_SELECTORS = [
   '[role="tooltip"]',
   '[role="dialog"]',
   '[role="menu"]',
-  ".nav",
-  ".navbar",
-  ".sidebar",
-  ".advertisement",
-  ".ad",
   ".cookie-banner",
-  ".cookie-notice",
   ".sr-only",
 ];
 
@@ -105,155 +101,85 @@ function isExcluded(el: Element): boolean {
   return style.display === "none" || style.visibility === "hidden";
 }
 
-/**
- * Extract visible text from the current page.
- * Uses platform-specific selectors when available,
- * falls back to generic content containers.
- */
-function extractVisibleText(): string[] {
-  const paragraphs: string[] = [];
-  const seen = new Set<string>();
+function extractContainers(): Array<{ id: string; text: string }> {
+  activeContainers.clear();
+  const results: Array<{ id: string; text: string }> = [];
+  const seenElements = new Set<Element>();
 
   // Check for Google Docs
   if (window.location.hostname.includes("docs.google.com")) {
-    return extractGoogleDocsText();
+    return extractGoogleDocsContainers();
   }
 
   // Platform-specific selectors
   const hostname = window.location.hostname;
-  let contentSelectors: string[] = [];
+  let containerSelectors: string[] = [];
 
   for (const [domain, selectors] of Object.entries(PLATFORM_SELECTORS)) {
     if (hostname.includes(domain)) {
-      contentSelectors = selectors;
+      containerSelectors = selectors;
       break;
     }
   }
 
-  // Fallback to generic content selectors
-  if (contentSelectors.length === 0) {
-    contentSelectors = [
-      "main p",
-      "article p",
-      '[role="main"] p',
-      ".post-content p",
-      ".article-body p",
-      ".entry-content p",
-      '[contenteditable="true"]',
-      "main div",
-      "article div",
-      "section p",
-    ];
+  // Fallback
+  if (containerSelectors.length === 0) {
+    containerSelectors = ["article", "main", '[role="main"]'];
   }
 
-  for (const selector of contentSelectors) {
+  for (const selector of containerSelectors) {
     const elements = document.querySelectorAll(selector);
     for (const el of elements) {
-      if (paragraphs.length >= 20) break;
-      if (isExcluded(el)) continue;
-      if (!isInViewport(el)) continue;
+      if (results.length >= 20) break;
+      if (isExcluded(el) || !isInViewport(el) || seenElements.has(el)) continue;
 
-      const text = cleanText(el.textContent || "");
-      if (text.length < 50) continue;
+      const { textNodeMap, flatText } = mapTextNodes(el);
+      if (flatText.length < 100) continue; // Min 100 chars
 
-      // Deduplicate
-      const hash = text.slice(0, 80);
-      if (seen.has(hash)) continue;
-      seen.add(hash);
-
-      paragraphs.push(text.slice(0, 2000));
+      seenElements.add(el);
+      const id = `container-${results.length}`;
+      activeContainers.set(id, { id, element: el, flatText, textNodeMap });
+      results.push({ id, text: flatText.slice(0, 3000) });
     }
   }
 
-  // If we still have very few, try broader selectors (visible only)
-  if (paragraphs.length < 2) {
-    const broader = document.querySelectorAll("p, div, section, td");
-    for (const el of broader) {
-      if (paragraphs.length >= 20) break;
-      if (isExcluded(el)) continue;
-      if (!isInViewport(el)) continue;
-
-      const text = cleanText(el.textContent || "");
-      if (text.length < 100 || text.length > 3000) continue;
-
-      const hash = text.slice(0, 80);
-      if (seen.has(hash)) continue;
-      seen.add(hash);
-
-      paragraphs.push(text.slice(0, 2000));
-    }
-  }
-
-  return paragraphs;
+  console.log(`[AI Shield] Extracted ${results.length} active containers.`);
+  return results;
 }
 
 // ──────────────────────────────────────────────────────────
 // SECTION 2: Google Docs support
 // ──────────────────────────────────────────────────────────
 
-function extractGoogleDocsText(): string[] {
-  const paragraphs: string[] = [];
+function extractGoogleDocsContainers(): Array<{ id: string; text: string }> {
+  const results: Array<{ id: string; text: string }> = [];
+  const editor = document.querySelector(".kix-appview-editor");
+  if (!editor) return results; // Return empty if not found, DO NOT fallback to document.body
 
-  // Google Docs renders text in .kix-lineview-content spans
-  const lineViews = document.querySelectorAll(".kix-lineview-content");
-
-  if (lineViews.length === 0) {
-    // Fallback: try the editor div directly
-    const editor = document.querySelector(".kix-appview-editor");
-    if (editor) {
-      const text = cleanText(editor.textContent || "");
-      if (text.length > 50) {
-        paragraphs.push(text.slice(0, 4000));
-      }
-    }
-    return paragraphs;
+  const { textNodeMap, flatText } = mapTextNodes(editor);
+  if (flatText.length > 50) {
+    const id = `docs-container-0`;
+    activeContainers.set(id, { id, element: editor, flatText, textNodeMap });
+    results.push({ id, text: flatText.slice(0, 4000) });
   }
-
-  let currentParagraph = "";
-
-  for (const lineView of lineViews) {
-    const lineText = cleanText(lineView.textContent || "");
-    if (!lineText) {
-      // Empty line = paragraph break
-      if (currentParagraph.length > 50) {
-        paragraphs.push(currentParagraph.slice(0, 2000));
-      }
-      currentParagraph = "";
-      continue;
-    }
-    currentParagraph += (currentParagraph ? " " : "") + lineText;
-  }
-
-  // Push final paragraph
-  if (currentParagraph.length > 50) {
-    paragraphs.push(currentParagraph.slice(0, 2000));
-  }
-
-  return paragraphs;
+  return results;
 }
 
 // ──────────────────────────────────────────────────────────
 // SECTION 3: Text-node mapping (for highlight/blur)
 // ──────────────────────────────────────────────────────────
 
-/**
- * Build a flattened map of all visible text nodes in the content area.
- * Each entry: { node, globalStart, globalEnd }
- */
-function mapTextNodes(root?: Element): void {
-  textNodeMap = [];
-  flatText = "";
+function mapTextNodes(root: Element): {
+  textNodeMap: TextNodeEntry[];
+  flatText: string;
+} {
+  const textNodeMap: TextNodeEntry[] = [];
+  let flatText = "";
 
-  const target =
-    root ||
-    document.querySelector("main, article, [role='main']") ||
-    document.body;
-
-  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node: Text): number {
       const parent = node.parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
-
       const tag = parent.tagName;
       if (
         tag === "SCRIPT" ||
@@ -261,33 +187,27 @@ function mapTextNodes(root?: Element): void {
         tag === "NOSCRIPT" ||
         tag === "BUTTON" ||
         tag === "SVG"
-      ) {
+      )
         return NodeFilter.FILTER_REJECT;
-      }
-
       if (
         parent.closest('[aria-hidden="true"]') ||
         parent.closest("nav") ||
         parent.closest("header")
-      ) {
+      )
         return NodeFilter.FILTER_REJECT;
-      }
-
       const style = window.getComputedStyle(parent);
-      if (style.display === "none" || style.visibility === "hidden") {
+      if (style.display === "none" || style.visibility === "hidden")
         return NodeFilter.FILTER_REJECT;
-      }
 
       const text = node.nodeValue || "";
       if (!text.trim()) return NodeFilter.FILTER_REJECT;
-
       return NodeFilter.FILTER_ACCEPT;
     },
   });
 
   let current: Text | null;
   while ((current = walker.nextNode() as Text)) {
-    const text = current.nodeValue || "";
+    const text = current.nodeValue || ""; // keep exact whitespace so offsets match exactly
     textNodeMap.push({
       node: current,
       globalStart: flatText.length,
@@ -295,171 +215,72 @@ function mapTextNodes(root?: Element): void {
     });
     flatText += text;
   }
-
-  console.log(
-    `[AI Shield] Text-node map built: ${textNodeMap.length} nodes, ${flatText.length} chars`,
-  );
+  return { textNodeMap, flatText };
 }
 
 // ──────────────────────────────────────────────────────────
-// SECTION 4: Highlight via Range API
+// SECTION 4: Highlight via exact ranges
 // ──────────────────────────────────────────────────────────
 
-/**
- * Find the character offset range for a text snippet in our flat text map.
- */
-function findSnippetOffsets(
-  snippet: string,
-): { start: number; end: number } | null {
-  const normSnippet = snippet.replace(/\s+/g, " ").toLowerCase().trim();
-  const normFlat = flatText.replace(/\s+/g, " ").toLowerCase();
-
-  if (normSnippet.length < 10) return null;
-
-  const idx = normFlat.indexOf(normSnippet);
-  if (idx !== -1) {
-    return { start: idx, end: idx + normSnippet.length };
-  }
-
-  // Fuzzy: strip all whitespace
-  const stripped = normSnippet.replace(/\s+/g, "");
-  const flatStripped = flatText.replace(/\s+/g, "").toLowerCase();
-  const sIdx = flatStripped.indexOf(stripped);
-  if (sIdx === -1) return null;
-
-  // Map stripped offset back to real offset
-  let realStart = -1;
-  let realEnd = -1;
-  let strippedPos = 0;
-
-  for (let i = 0; i < flatText.length; i++) {
-    if (!/\s/.test(flatText[i])) {
-      if (strippedPos === sIdx) realStart = i;
-      if (strippedPos === sIdx + stripped.length - 1) {
-        realEnd = i + 1;
-        break;
-      }
-      strippedPos++;
-    }
-  }
-
-  if (realStart >= 0 && realEnd > realStart) {
-    return { start: realStart, end: realEnd };
-  }
-
-  return null;
-}
-
-/**
- * Create a Range spanning the given character offsets in the text-node map.
- */
-function createRangeFromOffsets(start: number, end: number): Range | null {
-  if (textNodeMap.length === 0) return null;
-
-  let startNode: Text | null = null;
-  let startOffset = 0;
-  let endNode: Text | null = null;
-  let endOffset = 0;
-
-  for (const entry of textNodeMap) {
-    if (!startNode && entry.globalEnd > start) {
-      startNode = entry.node;
-      startOffset = start - entry.globalStart;
-    }
-    if (entry.globalEnd >= end) {
-      endNode = entry.node;
-      endOffset = end - entry.globalStart;
-      break;
-    }
-  }
-
-  if (!startNode || !endNode) return null;
-
-  try {
-    const range = document.createRange();
-    range.setStart(
-      startNode,
-      Math.max(0, Math.min(startOffset, startNode.length)),
-    );
-    range.setEnd(endNode, Math.max(0, Math.min(endOffset, endNode.length)));
-    return range;
-  } catch (e) {
-    console.warn("[AI Shield] Range creation failed:", e);
-    return null;
-  }
-}
-
-/**
- * Highlight a text snippet by wrapping it in a <span>.
- */
-function highlightRange(
-  snippet: string,
-  className: string,
-): HTMLSpanElement | null {
-  const offsets = findSnippetOffsets(snippet);
-  if (!offsets) {
-    console.warn(
-      `[AI Shield] Could not find text: "${snippet.slice(0, 40)}..."`,
-    );
-    return null;
-  }
-
-  const range = createRangeFromOffsets(offsets.start, offsets.end);
-  if (!range) return null;
-
-  try {
-    const span = document.createElement("span");
-    span.className = className;
-    span.dataset.aiShield = "true";
-    range.surroundContents(span);
-    console.log(
-      `[AI Shield] Wrapped text with ${className}: "${snippet.slice(0, 30)}..."`,
-    );
-    return span;
-  } catch (e) {
-    // surroundContents fails if range spans multiple parent elements
-    // Fallback: highlight individual text nodes within the range
-    console.warn(
-      "[AI Shield] surroundContents failed, using node-level highlighting",
-    );
-    return highlightRangeFallback(offsets.start, offsets.end, className);
-  }
-}
-
-/**
- * Fallback: when Range.surroundContents() fails (cross-element range),
- * wrap individual text nodes separately.
- */
-function highlightRangeFallback(
+function highlightExactOffsets(
+  containerId: string,
   start: number,
   end: number,
   className: string,
-): HTMLSpanElement | null {
-  let firstSpan: HTMLSpanElement | null = null;
+): HTMLSpanElement[] {
+  const container = activeContainers.get(containerId);
+  if (!container) return [];
 
-  for (const entry of textNodeMap) {
+  // RECOMPUTE BEFORE HIGHLIGHTING
+  const { textNodeMap, flatText } = mapTextNodes(container.element);
+  container.textNodeMap = textNodeMap;
+  container.flatText = flatText;
+
+  if (container.textNodeMap.length === 0) return [];
+
+  const spans: HTMLSpanElement[] = [];
+  const entriesToProcess = [];
+
+  for (const entry of container.textNodeMap) {
     if (entry.globalEnd <= start || entry.globalStart >= end) continue;
+    entriesToProcess.push(entry);
+  }
 
+  let fallbackUsed = 0;
+
+  // Process backwards to avoid offset shifting!
+  for (let i = entriesToProcess.length - 1; i >= 0; i--) {
+    const entry = entriesToProcess[i];
     const nodeStart = Math.max(0, start - entry.globalStart);
     const nodeEnd = Math.min(entry.node.length, end - entry.globalStart);
 
     try {
-      const range = document.createRange();
-      range.setStart(entry.node, nodeStart);
-      range.setEnd(entry.node, nodeEnd);
-
       const span = document.createElement("span");
       span.className = className;
       span.dataset.aiShield = "true";
-      range.surroundContents(span);
 
-      if (!firstSpan) firstSpan = span;
+      if (nodeStart === 0 && nodeEnd === entry.node.length) {
+        entry.node.parentNode!.insertBefore(span, entry.node);
+        span.appendChild(entry.node);
+      } else {
+        const matchText = entry.node.splitText(nodeStart);
+        matchText.splitText(nodeEnd - nodeStart);
+        matchText.parentNode!.insertBefore(span, matchText);
+        span.appendChild(matchText);
+      }
+      spans.push(span);
     } catch {
-      // Skip this node if wrapping fails
+      fallbackUsed++;
     }
   }
 
-  return firstSpan;
+  if (fallbackUsed > 0) {
+    console.log(
+      `[AI Shield] Highlight fallback triggered on ${fallbackUsed} nodes.`,
+    );
+  }
+
+  return spans.reverse(); // Return in document order
 }
 
 // ──────────────────────────────────────────────────────────
@@ -504,44 +325,101 @@ function applyContentBlur(analysis: PageAnalysis): void {
     `[AI Shield] Applying blur. Threshold: ${threshold}%, Items: ${analysis.items.length}`,
   );
 
-  // Rebuild text map before blurring
-  mapTextNodes();
+  let blursApplied = 0;
 
   analysis.items
     .filter((item) => item.type === "text" && item.score > threshold)
     .forEach((item) => {
-      if (!item.preview) return;
-      const span = highlightRange(item.preview.slice(0, 120), "ai-blur");
-      if (span) {
-        span.title = `AI likelihood: ${Math.round(item.score)}% — click to reveal`;
-        span.addEventListener("click", () => {
-          span.classList.toggle("revealed");
+      if (item.flaggedRanges && item.flaggedRanges.length > 0) {
+        item.flaggedRanges.forEach((range) => {
+          const spans = highlightExactOffsets(
+            item.id,
+            range.start,
+            range.end,
+            "ai-blur",
+          );
+          if (spans.length > 0) {
+            blursApplied += spans.length;
+            spans.forEach((span) => {
+              span.title = `AI likelihood: ${Math.round(item.score)}% — click to reveal`;
+              span.addEventListener("click", () => {
+                span.classList.toggle("revealed");
+              });
+            });
+          }
         });
       }
     });
+
+  console.log(`[AI Shield] Applied blur to ${blursApplied} text node spans.`);
 }
 
-function highlightContentOnPage(preview: string): void {
+function highlightContentOnPage(
+  preview: string,
+  itemScore?: ContentScore,
+): void {
   // Remove previous highlights
   clearHighlights();
 
-  // Rebuild text map
-  mapTextNodes();
+  let highlightCount = 0;
 
-  const span = highlightRange(preview.slice(0, 120), "ai-highlight");
-  if (span) {
-    span.scrollIntoView({ behavior: "smooth", block: "center" });
-
-    // Auto-remove after 3 seconds
-    setTimeout(() => {
-      if (span.parentNode) {
-        const parent = span.parentNode;
-        while (span.firstChild) {
-          parent.insertBefore(span.firstChild, span);
-        }
-        parent.removeChild(span);
+  if (
+    itemScore &&
+    itemScore.flaggedRanges &&
+    itemScore.flaggedRanges.length > 0
+  ) {
+    let anyHighlighted = false;
+    itemScore.flaggedRanges.forEach((range) => {
+      const spans = highlightExactOffsets(
+        itemScore.id,
+        range.start,
+        range.end,
+        "ai-highlight",
+      );
+      if (spans.length > 0) {
+        highlightCount += spans.length;
+        if (!anyHighlighted)
+          spans[0].scrollIntoView({ behavior: "smooth", block: "center" });
+        anyHighlighted = true;
+        spans.forEach((s) => setTimeout(() => clearSpan(s), 3000));
       }
-    }, 3000);
+    });
+    console.log(
+      `[AI Shield] Highlighted exact ranges: ${highlightCount} spans created.`,
+    );
+    if (anyHighlighted) return;
+  }
+
+  // Fallback to searching all containers
+  for (const [id, container] of activeContainers.entries()) {
+    const idx = container.flatText.indexOf(preview.slice(0, 100));
+    if (idx !== -1) {
+      const spans = highlightExactOffsets(
+        id,
+        idx,
+        idx + Math.min(preview.length, 100),
+        "ai-highlight",
+      );
+      if (spans.length > 0) {
+        highlightCount += spans.length;
+        spans[0].scrollIntoView({ behavior: "smooth", block: "center" });
+        spans.forEach((s) => setTimeout(() => clearSpan(s), 3000));
+        console.log(
+          `[AI Shield] Fallback string-based highlighted ranges: ${highlightCount} spans created.`,
+        );
+        return;
+      }
+    }
+  }
+}
+
+function clearSpan(span: HTMLSpanElement): void {
+  if (span.parentNode) {
+    const parent = span.parentNode;
+    while (span.firstChild) {
+      parent.insertBefore(span.firstChild, span);
+    }
+    parent.removeChild(span);
   }
 }
 
@@ -658,10 +536,10 @@ async function runAnalysis(): Promise<void> {
   injectFloatingBadge(null); // Show "Scanning..."
 
   // Extract visible text
-  const paragraphs = extractVisibleText();
-  console.log(`[AI Shield] Extracted ${paragraphs.length} paragraphs`);
+  const containers = extractContainers();
+  console.log(`[AI Shield] Extracted ${containers.length} containers`);
 
-  if (paragraphs.length === 0) {
+  if (containers.length === 0) {
     isAnalyzing = false;
     injectFloatingBadge(null);
     const badge = badgeElement; // re-read after injectFloatingBadge sets it
@@ -684,7 +562,7 @@ async function runAnalysis(): Promise<void> {
     payload: {
       url: window.location.href,
       title: document.title,
-      paragraphs,
+      containers,
       images: compressedImages,
     },
   };
@@ -712,14 +590,46 @@ async function runAnalysis(): Promise<void> {
 }
 
 function handleAnalysisResult(analysis: PageAnalysis): void {
+  // Normalize overall score
+  if (analysis.overallScore <= 1 && analysis.overallScore > 0) {
+    analysis.overallScore = Math.round(analysis.overallScore * 100);
+  }
+
+  // TEMPORARILY SIMULATE FLAGGED RANGES FOR DEBUGGING
+  // AND NORMALIZE ITEM SCORES
+  analysis.items.forEach((item) => {
+    if (item.score <= 1 && item.score > 0) {
+      item.score = Math.round(item.score * 100);
+    }
+    if (item.type === "text") {
+      // Simulate fake ranges independently of backend for testing
+      item.flaggedRanges = [{ start: 20, end: 120 }];
+      item.score = 80; // force high score to trigger blur securely
+    }
+  });
+
   currentAnalysis = analysis;
+
+  // Debug logging
+  console.log(`[AI Shield] --- DEBUG LOGS ---`);
+  console.log(`[AI Shield] Containers mapped: ${activeContainers.size}`);
+  console.log(
+    `[AI Shield] Normalized Overall Score: ${analysis.overallScore}%`,
+  );
+  console.log(`[AI Shield] Threshold: ${settings?.threshold}%`);
+
   injectFloatingBadge(analysis.overallScore);
 
   if (
     settings?.autoBlur &&
     analysis.overallScore > (settings?.threshold ?? 70)
   ) {
+    console.log(`[AI Shield] AutoBlur active. Calling applyContentBlur...`);
     applyContentBlur(analysis);
+  } else {
+    console.log(
+      `[AI Shield] AutoBlur skipped. Enable autoBlur and set threshold lower than ${analysis.overallScore} to trigger.`,
+    );
   }
 
   if (isGoogleSearchPage()) {
@@ -728,34 +638,46 @@ function handleAnalysisResult(analysis: PageAnalysis): void {
 }
 
 // ──────────────────────────────────────────────────────────
-// SECTION 8: SPA handling — MutationObserver
+// SECTION 8: SPA handling — MutationObserver + URL change
 // ──────────────────────────────────────────────────────────
 
 let lastUrl = location.href;
+let spaDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let spaObserver: MutationObserver | null = null;
 
-function reinitialize(): void {
-  console.log("[AI Shield] SPA navigation detected, reinitializing...");
-  clearHighlights();
-  clearBlurs();
-  currentAnalysis = null;
-  isAnalyzing = false;
-  textNodeMap = [];
-  flatText = "";
+function onUrlChange(): void {
+  // Debounce rapid URL changes (SPA navigation fires multiple mutations)
+  if (spaDebounceTimer) clearTimeout(spaDebounceTimer);
+  spaDebounceTimer = setTimeout(() => {
+    console.log(`[AI Shield] URL changed → ${location.href}`);
+    clearHighlights();
+    clearBlurs();
+    currentAnalysis = null;
+    isAnalyzing = false;
+    activeContainers.clear();
 
-  // Re-inject badge (independent of analysis)
-  if (badgeElement) badgeElement.remove();
-  badgeElement = null;
-  injectFloatingBadge(null);
+    // Re-inject badge fresh after navigation
+    if (badgeElement) {
+      badgeElement.remove();
+      badgeElement = null;
+    }
+
+    // Re-run analysis after short settle time
+    setTimeout(() => initializeExtension(true), 500);
+  }, 350);
 }
 
-const observer = new MutationObserver(() => {
-  if (location.href !== lastUrl) {
-    lastUrl = location.href;
-    reinitialize();
-  }
-});
-
-observer.observe(document, { subtree: true, childList: true });
+function startSpaObserver(): void {
+  if (spaObserver) return; // Already running
+  spaObserver = new MutationObserver(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      onUrlChange();
+    }
+  });
+  spaObserver.observe(document, { subtree: true, childList: true });
+  console.log("[AI Shield] SPA MutationObserver started.");
+}
 
 // ──────────────────────────────────────────────────────────
 // SECTION 9: Google Search Dots
@@ -820,9 +742,9 @@ chrome.runtime.onMessage.addListener(
         return true;
 
       case "HIGHLIGHT_ITEM": {
-        const { preview } = message.payload || {};
+        const { preview, item } = message.payload || {};
         if (preview) {
-          highlightContentOnPage(preview);
+          highlightContentOnPage(preview, item);
         }
         sendResponse({ ok: true });
         break;
@@ -836,7 +758,7 @@ chrome.runtime.onMessage.addListener(
 );
 
 // ──────────────────────────────────────────────────────────
-// SECTION 11: Initialization
+// SECTION 11: Helpers
 // ──────────────────────────────────────────────────────────
 
 function loadSettings(): Promise<ShieldSettings> {
@@ -860,21 +782,92 @@ function cleanText(raw: string): string {
   return raw.replace(/\s+/g, " ").replace(/\n+/g, " ").trim();
 }
 
-// Inject styles immediately
-injectStyles();
+// ──────────────────────────────────────────────────────────
+// SECTION 12: Safe badge injection (guarded, no duplicates)
+// ──────────────────────────────────────────────────────────
 
-// Inject badge on load (independent of analysis)
-async function initBadge(): Promise<void> {
+function ensureBadge(): void {
+  if (document.getElementById("ai-shield-badge")) return; // already present
+  injectFloatingBadge(null);
+}
+
+// ──────────────────────────────────────────────────────────
+// SECTION 13: Main entry point
+// ──────────────────────────────────────────────────────────
+
+async function initializeExtension(afterNavigation = false): Promise<void> {
   settings = await loadSettings();
-  if (settings.privacyConsent) {
-    injectFloatingBadge(null);
-    // Auto-analyze on first load
-    setTimeout(() => runAnalysis(), 1500);
+
+  if (!settings.privacyConsent) {
+    console.log("[AI Shield] Privacy consent not given, skipping init.");
+    return;
+  }
+
+  console.log(
+    `[AI Shield] Initializing${afterNavigation ? " (post-navigation)" : ""}. URL: ${location.href}`,
+  );
+
+  // Inject styles once
+  injectStyles();
+
+  // Inject badge (guarded — no duplicate)
+  ensureBadge();
+
+  // Start SPA observer (no-op if already running)
+  startSpaObserver();
+
+  // Auto-scan after a short settle delay
+  const delay = afterNavigation ? 800 : 1500;
+  setTimeout(() => {
+    console.log("[AI Shield] Auto-scan starting...");
+    runAnalysis();
+  }, delay);
+}
+
+// ──────────────────────────────────────────────────────────
+// SECTION 14: Double-init guard + boot
+// ──────────────────────────────────────────────────────────
+
+// Prevent double-initialization if the extension is reloaded in an existing tab
+// (chrome-extension://invalid errors come from injecting twice after reload)
+declare global {
+  interface Window {
+    __AI_SHIELD_INITIALIZED__?: boolean;
   }
 }
 
-if (document.readyState === "complete") {
-  initBadge();
+if (window.__AI_SHIELD_INITIALIZED__) {
+  // Extension was reloaded — reset state cleanly before re-running
+  console.log(
+    "[AI Shield] Previous instance detected — cleaning up and reinitializing.",
+  );
+  clearHighlights();
+  clearBlurs();
+  currentAnalysis = null;
+  isAnalyzing = false;
+  activeContainers.clear();
+  const prevBadge = badgeElement as HTMLElement | null;
+  if (prevBadge) {
+    prevBadge.remove();
+    badgeElement = null;
+  }
+  const prevObserver = spaObserver as MutationObserver | null;
+  if (prevObserver) {
+    prevObserver.disconnect();
+    spaObserver = null;
+  }
+}
+
+window.__AI_SHIELD_INITIALIZED__ = true;
+
+// Boot on DOM ready
+if (
+  document.readyState === "complete" ||
+  document.readyState === "interactive"
+) {
+  initializeExtension();
 } else {
-  window.addEventListener("load", () => initBadge());
+  document.addEventListener("DOMContentLoaded", () => initializeExtension(), {
+    once: true,
+  });
 }

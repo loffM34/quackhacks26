@@ -11,10 +11,16 @@ import { config } from "../config.js";
 
 export const apiProvider = {
   async analyzeText(text) {
+    if (config.detectMode === "mock") {
+      return mockDetect(text);
+    }
     return detectWithProvider(text);
   },
 
   async analyzeImage(imageData) {
+    if (config.detectMode === "mock") {
+      return callMockImage(imageData);
+    }
     try {
       return await callHuggingFaceImage(imageData);
     } catch (err) {
@@ -269,6 +275,70 @@ async function callHuggingFaceImage(imageData) {
     score: aiScore,
     provider: "huggingface-image",
     details: { predictions },
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// Mock Provider — Deterministic with exact ranges
+// ──────────────────────────────────────────────────────────
+
+function mockDetect(text) {
+  const flaggedRanges = [];
+  const sentenceRegex = /[^.!?]+[.!?]+/g;
+  let match;
+  let count = 0;
+  let lastIndex = 0;
+
+  // Mark every 3rd sentence
+  while ((match = sentenceRegex.exec(text)) !== null) {
+    count++;
+    if (count % 3 === 0) {
+      flaggedRanges.push({
+        start: match.index,
+        end: match.index + match[0].length,
+      });
+    }
+    lastIndex = sentenceRegex.lastIndex;
+  }
+
+  // Handle trailing text
+  const trailing = text.substring(lastIndex);
+  if (trailing.trim().length > 0) {
+    count++;
+    if (count % 3 === 0) {
+      flaggedRanges.push({ start: lastIndex, end: text.length });
+    }
+  }
+
+  // Fallback: if very short text and no ranges flagged, flag the whole thing
+  // just so we have something to test highlight/blur on.
+  if (flaggedRanges.length === 0 && text.trim().length > 0) {
+    flaggedRanges.push({ start: 0, end: text.length });
+  }
+
+  // Deterministic slightly randomized score (0.40 - 0.89) based on text length
+  const score = 0.4 + (Math.sin(text.length) * 0.5 + 0.5) * 0.49;
+
+  console.log(
+    `[provider] mockDetect generated ${flaggedRanges.length} ranges for ${text.length} chars`,
+  );
+
+  return {
+    score,
+    provider: "mock",
+    flaggedRanges,
+  };
+}
+
+function callMockImage(imageData) {
+  // Deterministic score based on image string length
+  const len = imageData?.length || 0;
+  const isAi = len % 2 === 0;
+  const score = isAi ? 0.75 + (len % 20) / 100 : 0.15 + (len % 10) / 100;
+
+  return {
+    score,
+    provider: "mock-image",
   };
 }
 

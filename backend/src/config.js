@@ -9,10 +9,11 @@ export const config = {
   logLevel: process.env.LOG_LEVEL || "info",
 
   // ── Provider selection ──
+  // NEW: "mock" or "api" modes. Mock bypasses HF completely.
+  detectMode: process.env.DETECTION_MODE || "mock",
   detectProvider: process.env.DETECT_PROVIDER || "api",
 
   // ── External API keys ──
-  apiProviderName: process.env.API_PROVIDER_NAME || "huggingface",
   gptZeroApiKey: process.env.GPTZERO_API_KEY || "",
   originalityApiKey: process.env.ORIGINALITY_API_KEY || "",
   saplingApiKey: process.env.SAPLING_API_KEY || "",

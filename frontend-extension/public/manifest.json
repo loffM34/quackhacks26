@@ -5,6 +5,7 @@
   "description": "Detect and minimize exposure to AI-generated content. Shows probabilistic AI scores with a non-intrusive floating badge.",
   "permissions": ["activeTab", "storage", "scripting", "sidePanel"],
   "host_permissions": [
+    "<all_urls>",
     "http://localhost:3001/*",
     "https://*.your-backend.onrender.com/*"
   ],

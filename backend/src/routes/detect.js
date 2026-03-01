@@ -51,7 +51,7 @@ detectRouter.post("/text", async (req, res) => {
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
 
   // Per-IP rate check
-  if (!checkIpRate(clientIp)) {
+  if (config.detectMode !== "mock" && !checkIpRate(clientIp)) {
     logger.warn({ ip: clientIp }, "Rate limited");
     return res.status(429).json({
       error: "Too many requests. Max 5 per 10 seconds.",
@@ -134,7 +134,7 @@ detectRouter.post("/image", async (req, res) => {
   const start = Date.now();
   const clientIp = req.ip || req.socket.remoteAddress || "unknown";
 
-  if (!checkIpRate(clientIp)) {
+  if (config.detectMode !== "mock" && !checkIpRate(clientIp)) {
     return res.status(429).json({
       error: "Too many requests.",
       score: 0,

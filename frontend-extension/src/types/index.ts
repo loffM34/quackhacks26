@@ -14,6 +14,8 @@ export interface ContentScore {
   preview: string;
   /** Provider that generated this score */
   provider: string;
+  /** Exact character offsets of flagged sentences (relative to preview) */
+  flaggedRanges?: { start: number; end: number }[];
 }
 
 /** Aggregated page-level analysis result */
@@ -36,12 +38,18 @@ export interface PageAnalysis {
   cached: boolean;
 }
 
+/** Data extracted from a container element */
+export interface ExtractedContainerData {
+  id: string;
+  text: string;
+}
+
 /** Data extracted from a web page by the content script */
 export interface PageExtraction {
   /** Page URL */
   url: string;
-  /** Extracted text paragraphs (cleaned, trimmed) */
-  paragraphs: string[];
+  /** Extracted text containers (e.g. social posts, articles) */
+  containers: ExtractedContainerData[];
   /** Image URLs or base64 data URIs (compressed) */
   images: string[];
   /** Page title */
@@ -97,6 +105,7 @@ export interface DetectTextResponse {
   details?: {
     sentences?: Array<{ text: string; score: number }>;
   };
+  flaggedRanges?: { start: number; end: number }[];
   cached: boolean;
 }
 

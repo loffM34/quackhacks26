@@ -102,7 +102,7 @@ export function extractPageContent(): PageExtraction {
   return {
     url: window.location.href,
     title: document.title,
-    paragraphs: [], // Text is now extracted by contentScript directly
+    containers: [], // Text is now extracted by contentScript directly
     images,
   };
 }

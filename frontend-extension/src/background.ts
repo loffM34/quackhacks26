@@ -93,7 +93,7 @@ async function handleExtraction(
   extraction: PageExtraction,
   tabId?: number,
 ): Promise<PageAnalysis | null> {
-  const cacheKey = generateCacheKey(extraction.url, extraction.paragraphs);
+  const cacheKey = generateCacheKey(extraction.url, extraction.containers);
 
   // Check cache
   const cached = resultCache.get(cacheKey);
@@ -102,8 +102,8 @@ async function handleExtraction(
     return { ...cached, cached: true };
   }
 
-  // Analyze text paragraphs
-  const textScores = await analyzeTexts(extraction.paragraphs);
+  // Analyze text containers
+  const textScores = await analyzeContainers(extraction.containers);
 
   // Analyze images (if any)
   const imageScores = await analyzeImages(extraction.images);
@@ -262,31 +262,33 @@ async function handleUpdateSettings(
 // ──────────────────────────────────────────────────────────
 
 /**
- * Send each paragraph to the backend individually for per-paragraph scoring.
- * This gives accurate per-paragraph scores instead of one blended score.
+ * Send each container to the backend individually for per-container scoring (e.g. per social post).
  */
-async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
-  if (paragraphs.length === 0) return [];
+async function analyzeContainers(
+  containers: Array<{ id: string; text: string }>,
+): Promise<ContentScore[]> {
+  if (containers.length === 0) return [];
 
   const scores: ContentScore[] = [];
 
-  // Send paragraphs individually (limit to 10 to avoid rate limiting)
-  const toAnalyze = paragraphs.slice(0, 10);
+  // Send containers individually (limit to 10 to avoid rate limiting)
+  const toAnalyze = containers.slice(0, 10);
 
   for (let i = 0; i < toAnalyze.length; i++) {
-    const paragraph = toAnalyze[i].slice(0, 2000); // enforce max length
-    if (paragraph.length < 50) continue; // skip short fragments
+    const container = toAnalyze[i];
+    const text = container.text.slice(0, 2000); // enforce max length
+    if (text.length < 50) continue; // skip short fragments
 
     try {
       const response = await fetch(`${backendUrl}/detect/text`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: paragraph }),
+        body: JSON.stringify({ text }),
       });
 
       if (!response.ok) {
         console.warn(
-          `[AI Shield BG] Backend returned ${response.status} for paragraph ${i}`,
+          `[AI Shield BG] Backend returned ${response.status} for container ${container.id}`,
         );
         continue;
       }
@@ -294,11 +296,12 @@ async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
       const data: DetectTextResponse = await response.json();
 
       scores.push({
-        id: `text-${i}`,
+        id: container.id,
         type: "text" as const,
         score: Math.round(data.score * 100),
-        preview: paragraph.slice(0, 100),
+        preview: text.slice(0, 100),
         provider: data.provider,
+        flaggedRanges: data.flaggedRanges,
       });
     } catch (err) {
       console.warn(`[AI Shield BG] Failed to analyze paragraph ${i}:`, err);
@@ -347,8 +350,15 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
 // ──────────────────────────────────────────────────────────
 
 /** Generate a cache key from URL + content hash */
-function generateCacheKey(url: string, paragraphs: string[]): string {
-  const contentSample = paragraphs.slice(0, 3).join("").slice(0, 200);
+function generateCacheKey(
+  url: string,
+  containers: { id: string; text: string }[],
+): string {
+  const contentSample = containers
+    .slice(0, 3)
+    .map((c) => c.text)
+    .join("")
+    .slice(0, 200);
   return `${url}::${simpleHash(contentSample)}`;
 }
 
