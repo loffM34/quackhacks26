@@ -19,7 +19,7 @@ For over 50,000 years, humans were the only source of art, information, language
 
 Flare runs directly in your browser as a Chrome extension. It **passively analyzes every page you visit**, scoring text blocks and images for AI-generation probability. A small floating badge shows the overall score at a glance. For deeper inspection, a side panel breaks down every detected block with individual scores, confidence tiers, and explanations. Flagged content can be automatically blurred until you choose to reveal it.
 
-It's designed to be **non-intrusive** — you install it once and it works silently in the background. No copy-pasting, no switching tabs, no manual effort.
+It's designed to be **non-intrusive** - you install it once and it works silently in the background. No copy-pasting, no switching tabs, no manual effort.
 
 ## Built With
 
