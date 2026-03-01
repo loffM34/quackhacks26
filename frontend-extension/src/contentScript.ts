@@ -493,13 +493,17 @@ async function extractImages(): Promise<string[]> {
   });
 
   const results: string[] = [];
+  let imgIndex = 0;
 
   for (const img of candidates.slice(0, MAX_IMAGES)) {
     try {
       const b64 = await compressImage(img);
       if (b64) {
+        imgIndex++;
         const src = img.currentSrc || img.src;
         scannedImageSrcs.add(src);
+        // Register with the same ID the background will assign (img_1, img_2, ...)
+        blockElements.set(`img_${imgIndex}`, img);
         results.push(b64);
       }
     } catch {
