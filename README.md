@@ -1,6 +1,6 @@
-# AI Content Shield
+# Flare
 
-**Team Flare** — Michael Dox, Michael Loff, Sarah Simbulan, Leonard Weber
+Michael Dox, Michael Loff, Sarah Simbulan, Leonard Weber
 
 **A Chrome extension that detects AI-generated text and images on any webpage.**
 
