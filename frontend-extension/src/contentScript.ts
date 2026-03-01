@@ -121,7 +121,6 @@ async function safeSend<T = any>(msg: ExtensionMessage): Promise<T | null> {
 }
 
 async function loadSettings(): Promise<ShieldSettings> {
-  const result = await chrome.storage.local.get("settings");
   const defaults: ShieldSettings = {
     threshold: 70,
     autoBlur: false,
@@ -130,7 +129,18 @@ async function loadSettings(): Promise<ShieldSettings> {
     showSearchDots: true,
     backendUrl: "http://localhost:3001",
   };
-  return { ...defaults, ...(result.settings || {}) };
+
+  if (!chrome?.runtime?.id) {
+    return defaults;
+  }
+
+  try {
+    const result = await chrome.storage.local.get("settings");
+    return { ...defaults, ...(result.settings || {}) };
+  } catch (err) {
+    console.warn("[AI Shield] Settings load error:", err);
+    return defaults;
+  }
 }
 
 function isInExpandedViewport(el: Element): boolean {
@@ -614,11 +624,6 @@ function injectStyles(): void {
   `;
   (document.head || document.documentElement).appendChild(style);
 }
-
-// ──────────────────────────────────────────────────────────
-// § SPA NAVIGATION DETECTION
-// ──────────────────────────────────────────────────────────
-
 function resetForNavigation(): void {
   dbg("Navigation detected → resetting.");
   // Clear debug outlines
