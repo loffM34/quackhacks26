@@ -2,9 +2,8 @@
 // SidePanel — detailed AI analysis breakdown
 // ──────────────────────────────────────────────────────────
 // Shows page-level score, text vs image breakdown, AI density,
-// per-paragraph/image scores with click-to-highlight and
-// individual detail cards. Threshold slider with blur toggle,
-// and Elder Mode toggle.
+// per-block/image scores with click-to-highlight,
+// threshold slider with blur toggle, and Elder Mode toggle.
 
 import React, { useEffect, useState, useCallback } from "react";
 import clsx from "clsx";
@@ -26,7 +25,6 @@ export const SidePanel: React.FC = () => {
   const [elderMode, setElderMode] = useState(false);
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
 
-  // Load cached result and settings on mount
   useEffect(() => {
     loadSettings().then((s) => {
       setSettings(s);
@@ -50,7 +48,6 @@ export const SidePanel: React.FC = () => {
     });
   }, []);
 
-  // Listen for analysis updates
   useEffect(() => {
     const listener = (message: any) => {
       if (message.type === "ANALYSIS_RESULT") {
@@ -58,6 +55,7 @@ export const SidePanel: React.FC = () => {
         setLoading(false);
       }
     };
+
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
@@ -73,16 +71,35 @@ export const SidePanel: React.FC = () => {
     setLoading(false);
   };
 
-  const handleThresholdChange = useCallback((value: number) => {
-    setThreshold(value);
-    updateSettings({ threshold: value });
+  // Helper: send a RECALCULATE_BLUR message to the active tab's content script
+  const triggerBlurRecalculation = useCallback(() => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "RECALCULATE_BLUR" });
+      }
+    });
   }, []);
+
+  // Update threshold visually during drag (no re-evaluation)
+  const handleThresholdInput = useCallback((value: number) => {
+    setThreshold(value);
+  }, []);
+
+  // Commit threshold on mouse-up/touch-end and trigger re-evaluation
+  const handleThresholdCommit = useCallback(
+    (value: number) => {
+      setThreshold(value);
+      updateSettings({ threshold: value });
+      triggerBlurRecalculation();
+    },
+    [triggerBlurRecalculation],
+  );
 
   const handleAutoBlurToggle = useCallback(() => {
     const next = !autoBlur;
     setAutoBlur(next);
     updateSettings({ autoBlur: next });
-    // If enabling, also tell the content script to blur now
+
     if (next) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]?.id) {
@@ -99,26 +116,21 @@ export const SidePanel: React.FC = () => {
   }, [elderMode]);
 
   const handleItemClick = (item: ContentScore) => {
-    // Toggle expanded state
-    setExpandedItem(expandedItem === item.id ? null : item.id);
+    setExpandedItem((prev) => (prev === item.id ? null : item.id));
 
-    // Highlight on the page — send a message to content script
-    if (item.type === "text" && item.preview) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            type: "HIGHLIGHT_ITEM",
-            payload: { preview: item.preview, id: item.id },
-          });
-        }
-      });
-    }
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+          type: "HIGHLIGHT_ITEM",
+          payload: { preview: item.preview, item },
+        });
+      }
+    });
   };
 
   const score = analysis?.overallScore ?? 0;
   const color = getScoreColor(score);
 
-  // Helpers for readable labels
   const getScoreLabel = (s: number) => {
     if (s <= 20) return "Very likely human-written";
     if (s <= 40) return "Probably human-written";
@@ -140,13 +152,11 @@ export const SidePanel: React.FC = () => {
         elderMode && "elder-mode",
       )}
     >
-      {/* Header */}
       <div className="flex items-center gap-2 mb-2">
         <span className="text-xl">🛡️</span>
         <h1 className="text-lg font-bold text-glass-100">AI Content Shield</h1>
       </div>
 
-      {/* ── Page Score Card ── */}
       <div className="glass-panel p-4 space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm text-glass-text-muted">Page Score</span>
@@ -159,7 +169,6 @@ export const SidePanel: React.FC = () => {
 
         {analysis ? (
           <>
-            {/* Large score display */}
             <div className="text-center py-2">
               <div
                 className={clsx(
@@ -177,7 +186,6 @@ export const SidePanel: React.FC = () => {
               </p>
             </div>
 
-            {/* Score color indicator */}
             <div className="flex justify-center">
               <span className={clsx("score-pill", color)}>
                 {color === "safe" && "✅ Low AI probability"}
@@ -194,7 +202,6 @@ export const SidePanel: React.FC = () => {
           </div>
         )}
 
-        {/* Analyze button */}
         <button
           className="glass-btn w-full text-center"
           onClick={handleAnalyze}
@@ -204,40 +211,36 @@ export const SidePanel: React.FC = () => {
         </button>
       </div>
 
-      {/* ── Breakdown Card ── */}
       {analysis && (
         <div className="glass-panel p-4 space-y-3 animate-fade-in">
           <h2 className="text-sm font-semibold text-glass-200">
             Content Breakdown
           </h2>
 
-          {/* Text vs Image scores */}
           <div className="grid grid-cols-3 gap-3">
             <ScoreStat label="📝 Text" value={analysis.textScore} />
             <ScoreStat label="🖼️ Images" value={analysis.imageScore} />
             <ScoreStat label="📊 Density" value={analysis.aiDensity} />
           </div>
 
-          {/* Readable explanation */}
           <div className="text-xs text-glass-text-muted bg-glass-800/30 p-2 rounded-lg">
             {analysis.items.filter((i) => i.type === "text").length} text
-            sections and{" "}
-            {analysis.items.filter((i) => i.type === "image").length} images
-            analyzed.{" "}
+            blocks and {analysis.items.filter((i) => i.type === "image").length}{" "}
+            images analyzed.{" "}
             {analysis.aiDensity > 50
-              ? `${analysis.aiDensity}% of text sections show AI patterns.`
-              : `Most content appears human-written.`}
+              ? `${analysis.aiDensity}% of analyzed blocks show moderate or strong AI signals.`
+              : `Most analyzed content appears lower-risk.`}
           </div>
 
           <div className="glass-divider" />
 
-          {/* Per-item details — clickable and expandable */}
           <h3 className="text-xs font-semibold text-glass-text-muted">
             Detected Items{" "}
             <span className="text-glass-text-dim font-normal">
               (click to highlight on page)
             </span>
           </h3>
+
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {analysis.items.map((item) => (
               <ContentItemRow
@@ -252,14 +255,12 @@ export const SidePanel: React.FC = () => {
         </div>
       )}
 
-      {/* ── Controls Card ── */}
       <div className="glass-panel p-4 space-y-4">
         <h2 className="text-sm font-semibold text-glass-200">Controls</h2>
 
-        {/* Threshold slider */}
         <div>
           <div className="flex justify-between text-xs text-glass-text-muted mb-1">
-            <span>Blur threshold</span>
+            <span>AI Score Threshold</span>
             <span className="font-mono">{threshold}%</span>
           </div>
           <input
@@ -267,26 +268,27 @@ export const SidePanel: React.FC = () => {
             min={0}
             max={100}
             value={threshold}
-            onChange={(e) => handleThresholdChange(Number(e.target.value))}
+            onInput={(e) =>
+              handleThresholdInput(Number((e.target as HTMLInputElement).value))
+            }
+            onChange={(e) => handleThresholdCommit(Number(e.target.value))}
             className="w-full"
           />
           <div className="flex justify-between text-[10px] text-glass-text-dim mt-0.5">
-            <span>Lenient</span>
-            <span>Strict</span>
+            <span>Aggressive (0%)</span>
+            <span>Cautious (100%)</span>
           </div>
         </div>
 
         <div className="glass-divider" />
 
-        {/* Auto-blur toggle */}
         <ToggleRow
           label="Auto-blur above threshold"
-          description="Blur paragraphs scoring above your threshold"
+          description="Blur analyzed text blocks above your threshold"
           active={autoBlur}
           onToggle={handleAutoBlurToggle}
         />
 
-        {/* Elder Mode toggle */}
         <ToggleRow
           label="Elder Mode"
           description="Larger fonts and simplified interface"
@@ -295,7 +297,6 @@ export const SidePanel: React.FC = () => {
         />
       </div>
 
-      {/* ── Privacy notice ── */}
       <div className="text-[10px] text-glass-text-dim text-center px-4 leading-snug">
         This score is <strong>probabilistic</strong> and may be incorrect.
         Content is sent to a secure backend for analysis.
@@ -307,8 +308,6 @@ export const SidePanel: React.FC = () => {
     </div>
   );
 };
-
-// ── Sub-components ──
 
 const ScoreStat: React.FC<{ label: string; value: number }> = ({
   label,
@@ -345,7 +344,6 @@ const ContentItemRow: React.FC<ContentItemRowProps> = ({
           ? "Likely AI"
           : "AI";
 
-  // Truncate preview for readability
   const shortPreview = item.preview
     ? item.preview.length > 80
       ? item.preview.slice(0, 80) + "…"
@@ -363,7 +361,6 @@ const ContentItemRow: React.FC<ContentItemRowProps> = ({
       )}
       onClick={onClick}
     >
-      {/* Main row */}
       <div className="flex items-center gap-2 text-xs p-2.5">
         <span className="text-base">{item.type === "text" ? "📝" : "🖼️"}</span>
         <div className="flex-1 min-w-0">
@@ -395,20 +392,17 @@ const ContentItemRow: React.FC<ContentItemRowProps> = ({
         </div>
       </div>
 
-      {/* Expanded detail card */}
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-glass-700/30 space-y-2 animate-fade-in">
-          {/* Full preview text */}
           <div className="text-[11px] text-glass-text leading-relaxed bg-glass-900/40 p-2 rounded">
             {item.preview || "No text content available"}
           </div>
 
-          {/* Score breakdown */}
           <div className="grid grid-cols-2 gap-2 text-[10px]">
             <div className="bg-glass-800/40 p-1.5 rounded">
               <span className="text-glass-text-dim">Type:</span>{" "}
               <span className="text-glass-text">
-                {item.type === "text" ? "Text section" : "Image"}
+                {item.type === "text" ? "Text block" : "Image"}
               </span>
             </div>
             <div className="bg-glass-800/40 p-1.5 rounded">
@@ -433,7 +427,13 @@ const ContentItemRow: React.FC<ContentItemRowProps> = ({
             </div>
           </div>
 
-          {/* Visual score bar */}
+          {item.explanation && (
+            <div className="bg-glass-800/40 p-2 rounded text-[11px] text-glass-text">
+              <span className="text-glass-text-dim">Why flagged:</span>{" "}
+              {item.explanation}
+            </div>
+          )}
+
           <div className="glass-progress h-1.5">
             <div
               className={clsx("glass-progress-bar h-full rounded-full", {

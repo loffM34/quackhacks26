@@ -1,3 +1,4 @@
+
 // ──────────────────────────────────────────────────────────
 // Content Script — AI Content Shield (v2 Rewrite)
 // ──────────────────────────────────────────────────────────
@@ -128,10 +129,15 @@ async function loadSettings(): Promise<ShieldSettings> {
     showSearchDots: true,
     backendUrl: "http://localhost:3001",
   };
+  if (!chrome?.runtime?.id) {
+    return defaults;
+  }
+
   try {
     const result = await chrome.storage.local.get("settings");
     return { ...defaults, ...(result.settings || {}) };
-  } catch {
+  } catch (err) {
+    console.warn("[AI Shield] Settings load error:", err);
     return defaults;
   }
 }
@@ -292,7 +298,7 @@ function extractGoogleDocs(): ExtractedBlock[] {
       buffer += (buffer ? " " : "") + text;
       if (buffer.length >= CHUNK_SIZE) flush(p);
     }
-    flush(lastEl); // flush any remainder
+    flush(lastEl);
 
     if (results.length > 0) return results;
   }
@@ -444,6 +450,7 @@ async function runScan(): Promise<void> {
     }
     return;
   }
+
 
   currentAnalysis = response;
   updateBadgeScore(response.overallScore);
@@ -658,6 +665,7 @@ function injectStyles(): void {
 // ──────────────────────────────────────────────────────────
 // § SPA NAVIGATION DETECTION
 // ──────────────────────────────────────────────────────────
+
 
 function resetForNavigation(): void {
   dbg("Navigation detected → resetting.");
