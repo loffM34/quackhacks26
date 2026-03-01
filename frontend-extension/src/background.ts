@@ -269,13 +269,11 @@ async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
   if (paragraphs.length === 0) return [];
 
   const scores: ContentScore[] = [];
-
-  // Send paragraphs individually (limit to 10 to avoid rate limiting)
   const toAnalyze = paragraphs.slice(0, 10);
 
   for (let i = 0; i < toAnalyze.length; i++) {
-    const paragraph = toAnalyze[i].slice(0, 2000); // enforce max length
-    if (paragraph.length < 50) continue; // skip short fragments
+    const paragraph = toAnalyze[i].slice(0, 2000);
+    if (paragraph.length < 50) continue;
 
     try {
       const response = await fetch(`${backendUrl}/detect/text`, {
@@ -293,14 +291,20 @@ async function analyzeTexts(paragraphs: string[]): Promise<ContentScore[]> {
 
       const data: DetectTextResponse = await response.json();
 
-   scores.push({
-  id: `text-${i}`,
-  type: "text" as const,
-  score: Math.round(data.score * 100),
-  preview: paragraph.slice(0, 100),
-  provider: data.provider,
-  tier: data.tier ?? "unknown", // ✅ ADD THIS
-});
+      scores.push({
+        id: `text-${i}`,
+        type: "text",
+        score: Math.round(data.score * 100),
+        preview: paragraph.slice(0, 100),
+        provider: data.provider,
+        tier: data.tier ?? "unknown",
+      });
+    } catch (err) {
+      console.warn(
+        `[AI Shield BG] Failed to analyze paragraph ${i}:`,
+        err,
+      );
+    }
   }
 
   return scores;
@@ -325,14 +329,22 @@ async function analyzeImages(images: string[]): Promise<ContentScore[]> {
       if (!response.ok) continue;
 
       const data: DetectImageResponse = await response.json();
-     scores.push({
-  id: `img-${i}`,
-  type: "image",
-  score: Math.round(data.score * 100),
-  preview: images[i].slice(0, 80),
-  provider: data.provider,
-  tier: data.tier ?? "unknown", // ✅ ADD THIS
-});
+
+      scores.push({
+        id: `img-${i}`,
+        type: "image",
+        score: Math.round(data.score * 100),
+        preview: images[i].slice(0, 80),
+        provider: data.provider,
+        tier: data.tier ?? "unknown",
+      });
+    } catch (err) {
+      console.warn(
+        "[AI Shield BG] Image analysis failed for image",
+        i,
+        err,
+      );
+    }
   }
 
   return scores;
