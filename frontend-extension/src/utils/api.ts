@@ -1,7 +1,6 @@
 // ──────────────────────────────────────────────────────────
-// API utility — type-safe chrome.runtime messaging wrapper
+// API utility — background messaging + direct backend calls
 // ──────────────────────────────────────────────────────────
-// All communication from UI ↔ background uses these helpers.
 
 import type { ExtensionMessage, PageAnalysis, ShieldSettings } from "@/types";
 
@@ -23,7 +22,7 @@ export function sendToBackground<T = any>(
 }
 
 /**
- * Request a fresh analysis of the current tab.
+ * Request a fresh analysis of the current tab (legacy/background flow).
  */
 export async function requestAnalysis(): Promise<PageAnalysis | null> {
   return sendToBackground<PageAnalysis | null>({
@@ -32,7 +31,7 @@ export async function requestAnalysis(): Promise<PageAnalysis | null> {
 }
 
 /**
- * Get the cached analysis result for the current tab.
+ * Get the cached analysis result for the current tab (legacy/background flow).
  */
 export async function getCachedResult(): Promise<PageAnalysis | null> {
   return sendToBackground<PageAnalysis | null>({
@@ -70,4 +69,105 @@ export async function loadSettings(): Promise<ShieldSettings> {
       );
     });
   });
+}
+
+// ──────────────────────────────────────────────────────────
+// Localized backend API helpers
+// ──────────────────────────────────────────────────────────
+
+export type FlagTier = "low" | "medium" | "high";
+
+export interface TextChunkInput {
+  id: string;
+  text: string;
+  kind?: string;
+  start_char?: number;
+  end_char?: number;
+}
+
+export interface ImageInput {
+  id: string;
+  image: string;
+}
+
+export interface DetectionItemResult {
+  id: string;
+  score: number; // 0..1 from backend
+  tier: FlagTier;
+  explanation?: string | null;
+  text?: string;
+  kind?: string;
+  start_char?: number;
+  end_char?: number;
+}
+
+export interface BackendDetectionResponse {
+  score: number; // 0..1
+  provider: string;
+  details?: {
+    results?: DetectionItemResult[];
+    text?: {
+      score?: number;
+      results?: DetectionItemResult[];
+    };
+    images?: {
+      score?: number;
+      results?: DetectionItemResult[];
+    };
+    overall_tier?: FlagTier;
+    flagged_count?: number;
+  };
+  latency_ms?: number;
+  cached?: boolean;
+}
+
+async function postJson<TResponse>(
+  url: string,
+  body: unknown,
+): Promise<TResponse> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Backend request failed (${res.status}): ${text}`);
+  }
+
+  return res.json() as Promise<TResponse>;
+}
+
+export async function detectTextSpans(
+  chunks: TextChunkInput[],
+  backendUrl?: string,
+): Promise<BackendDetectionResponse> {
+  const baseUrl = backendUrl || (await loadSettings()).backendUrl;
+  return postJson<BackendDetectionResponse>(`${baseUrl}/detect/text/spans`, {
+    chunks,
+  });
+}
+
+export async function detectImageBatch(
+  images: ImageInput[],
+  backendUrl?: string,
+): Promise<BackendDetectionResponse> {
+  const baseUrl = backendUrl || (await loadSettings()).backendUrl;
+  return postJson<BackendDetectionResponse>(`${baseUrl}/detect/image/batch`, {
+    images,
+  });
+}
+
+export async function detectPage(
+  payload: {
+    chunks?: TextChunkInput[];
+    images?: ImageInput[];
+  },
+  backendUrl?: string,
+): Promise<BackendDetectionResponse> {
+  const baseUrl = backendUrl || (await loadSettings()).backendUrl;
+  return postJson<BackendDetectionResponse>(`${baseUrl}/detect/page`, payload);
 }

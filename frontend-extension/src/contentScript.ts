@@ -1,112 +1,170 @@
 // ──────────────────────────────────────────────────────────
-// Content Script — AI Content Shield
+// Content Script — localized text/image detection
 // ──────────────────────────────────────────────────────────
-// Injected into every HTTP(S) page. Extracts visible text and images,
-// sends to background for analysis, and applies UI changes (blur, dots).
-//
-// Runs in the page's isolated world. Communicates with background
-// via chrome.runtime.sendMessage.
 
 import { extractPageContent } from "./utils/domExtractor";
 import { compressImages } from "./utils/imageCompressor";
-import type {
-  ExtensionMessage,
-  PageAnalysis,
-  ContentScore,
-  ShieldSettings,
-} from "./types";
+import {
+  detectTextSpans,
+  detectImageBatch,
+  loadSettings,
+  type BackendDetectionResponse,
+  type DetectionItemResult,
+  type FlagTier,
+  type ImageInput,
+  type TextChunkInput,
+} from "./utils/api";
+import type { ExtensionMessage, ShieldSettings } from "./types";
 
 console.log("[AI Shield] Content script initialized. Ready to scan.");
 
-// ── State ──
-let currentAnalysis: PageAnalysis | null = null;
+type LocalizedPageAnalysis = {
+  overallScore: number; // 0..100
+  textScore: number; // 0..100
+  imageScore: number; // 0..100
+  textResults: DetectionItemResult[];
+  imageResults: DetectionItemResult[];
+};
+
+let currentAnalysis: LocalizedPageAnalysis | null = null;
 let settings: ShieldSettings | null = null;
 let badgeElement: HTMLElement | null = null;
 
-// ── Initialization ──
-// Wait a brief moment after page load for dynamic content to settle
 const INIT_DELAY_MS = 1500;
-const DEBOUNCE_MS = 2000;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Replace observer with setInterval for initial scan
-let initInterval: ReturnType<typeof setInterval> | null = null;
+// ──────────────────────────────────────────────────────────
+// Main init
+// ──────────────────────────────────────────────────────────
 
-/**
- * Main initialization — runs after page load + delay.
- * Extracts content, sends to background for analysis.
- */
 async function init(): Promise<void> {
-  // Load user settings
   settings = await loadSettings();
 
-  // Check privacy consent — don't analyze if user hasn't consented
   if (!settings.privacyConsent) {
     console.log("[AI Shield] Privacy consent not given, skipping analysis.");
     return;
   }
 
-  // Inject initial "Analyzing..." badge
   injectFloatingBadge(null);
 
-  // Extract page content
   const extraction = extractPageContent();
 
-  // Skip if page has very little content
   if (extraction.paragraphs.length === 0 && extraction.images.length === 0) {
     console.log("[AI Shield] No meaningful content found on page.");
-    if (badgeElement) {
-      badgeElement.innerHTML = `
-        <span style="color: #94a3b8; font-weight: 600;">AI: N/A (Short text)</span>
-        <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
-      `;
-    }
+    renderBadgeEmpty();
     return;
   }
 
-  // Compress images before sending (limit bandwidth)
+  const textChunks = buildTextChunks(extraction.paragraphs);
   const compressedImages = await compressImages(extraction.images);
+  const imageInputs: ImageInput[] = compressedImages.map((image, idx) => ({
+    id: `img_${idx + 1}`,
+    image,
+  }));
 
-  // Send to background for analysis
-  const message: ExtensionMessage = {
-    type: "EXTRACT_CONTENT",
-    payload: {
-      ...extraction,
-      images: compressedImages,
-    },
-  };
+  try {
+    const [textResponse, imageResponse] = await Promise.all([
+      textChunks.length > 0
+        ? detectTextSpans(textChunks, settings.backendUrl)
+        : Promise.resolve<BackendDetectionResponse>({
+            score: 0,
+            provider: "none",
+            details: { results: [] },
+          }),
+      imageInputs.length > 0
+        ? detectImageBatch(imageInputs, settings.backendUrl)
+        : Promise.resolve<BackendDetectionResponse>({
+            score: 0,
+            provider: "none",
+            details: { results: [] },
+          }),
+    ]);
 
-  chrome.runtime.sendMessage(message, (response: PageAnalysis | null) => {
-    if (chrome.runtime.lastError) {
-      console.warn(
-        "[AI Shield] Background error:",
-        chrome.runtime.lastError.message,
-      );
-      if (badgeElement) {
-        badgeElement.innerHTML = `
-          <span style="color: #ef4444; font-weight: 600;">AI: Error</span>
-          <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
-        `;
-      }
-      return;
-    }
-    if (response) {
-      handleAnalysisResult(response);
-    }
-  });
+    const analysis = toLocalizedPageAnalysis(textResponse, imageResponse);
+    handleAnalysisResult(analysis);
+  } catch (err) {
+    console.warn("[AI Shield] Analysis failed:", err);
+    renderBadgeError();
+  }
 }
 
-/**
- * Handle analysis results from the background service worker.
- * Updates the floating badge and optionally blurs content.
- */
-function handleAnalysisResult(analysis: PageAnalysis): void {
+// ──────────────────────────────────────────────────────────
+// Transformation helpers
+// ──────────────────────────────────────────────────────────
+
+function buildTextChunks(paragraphs: string[]): TextChunkInput[] {
+  const chunks: TextChunkInput[] = [];
+  let counter = 1;
+
+  for (const paragraph of paragraphs) {
+    const clean = (paragraph || "").replace(/\s+/g, " ").trim();
+    if (clean.length < 20) continue;
+
+    const sentenceParts = clean
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 20);
+
+    if (sentenceParts.length === 0) {
+      chunks.push({
+        id: `t_${counter++}`,
+        text: clean.slice(0, 1200),
+        kind: "paragraph",
+      });
+      continue;
+    }
+
+    for (const sentence of sentenceParts) {
+      chunks.push({
+        id: `t_${counter++}`,
+        text: sentence.slice(0, 1000),
+        kind: "sentence",
+      });
+    }
+  }
+
+  return chunks;
+}
+
+function toLocalizedPageAnalysis(
+  textResponse: BackendDetectionResponse,
+  imageResponse: BackendDetectionResponse,
+): LocalizedPageAnalysis {
+  const textResults = textResponse.details?.results ?? [];
+  const imageResults = imageResponse.details?.results ?? [];
+
+  const textScore = Math.round((textResponse.score ?? 0) * 100);
+  const imageScore = Math.round((imageResponse.score ?? 0) * 100);
+
+  let overallScore = 0;
+  if (textResults.length > 0 && imageResults.length > 0) {
+    overallScore = Math.round(textScore * 0.4 + imageScore * 0.6);
+  } else if (imageResults.length > 0) {
+    overallScore = imageScore;
+  } else if (textResults.length > 0) {
+    overallScore = textScore;
+  }
+
+  return {
+    overallScore,
+    textScore,
+    imageScore,
+    textResults,
+    imageResults,
+  };
+}
+
+// ──────────────────────────────────────────────────────────
+// Analysis handling
+// ──────────────────────────────────────────────────────────
+
+function handleAnalysisResult(analysis: LocalizedPageAnalysis): void {
   currentAnalysis = analysis;
 
-  // Inject or update the floating badge
   injectFloatingBadge(analysis.overallScore);
 
-  // Apply blur if auto-blur is enabled and score exceeds threshold
+  applyTextHighlights(analysis.textResults);
+  applyImageBadges(analysis.imageResults);
+
   if (
     settings?.autoBlur &&
     analysis.overallScore > (settings?.threshold ?? 70)
@@ -114,25 +172,22 @@ function handleAnalysisResult(analysis: PageAnalysis): void {
     applyContentBlur(analysis);
   }
 
-  // If we're on Google search results, inject colored dots
   if (isGoogleSearchPage()) {
     injectSearchDots();
   }
 }
 
 // ──────────────────────────────────────────────────────────
-// Floating Badge (injected into page DOM)
+// Badge UI
 // ──────────────────────────────────────────────────────────
 
 function injectFloatingBadge(score: number | null): void {
-  // Remove existing badge if present
   if (badgeElement) badgeElement.remove();
 
   const badge = document.createElement("div");
   badge.id = "ai-shield-badge";
 
-  // Determine color based on score
-  let color = "#94a3b8"; // Default parsing gray
+  let color = "#94a3b8";
   let bgColor = "rgba(148,163,184,0.15)";
   let scoreText = "Scanning...";
 
@@ -152,7 +207,6 @@ function injectFloatingBadge(score: number | null): void {
     <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
   `;
 
-  // Liquid Glass styling — dark blue glassmorphism
   Object.assign(badge.style, {
     position: "fixed",
     bottom: "20px",
@@ -177,17 +231,16 @@ function injectFloatingBadge(score: number | null): void {
     gap: "2px",
   });
 
-  // Hover: slight expand
   badge.addEventListener("mouseenter", () => {
     badge.style.transform = "scale(1.08)";
     badge.style.boxShadow = `0 6px 24px rgba(10,26,74,0.5), inset 0 1px 1px rgba(148,163,184,0.2), 0 0 30px 4px ${bgColor}`;
   });
+
   badge.addEventListener("mouseleave", () => {
     badge.style.transform = "scale(1)";
     badge.style.boxShadow = `0 4px 16px rgba(10,26,74,0.4), inset 0 1px 1px rgba(148,163,184,0.15), 0 0 20px 2px ${bgColor}`;
   });
 
-  // Click: open side panel
   badge.addEventListener("click", () => {
     chrome.runtime.sendMessage({ type: "OPEN_SIDE_PANEL" });
   });
@@ -196,46 +249,209 @@ function injectFloatingBadge(score: number | null): void {
   badgeElement = badge;
 }
 
+function renderBadgeEmpty(): void {
+  if (!badgeElement) return;
+  badgeElement.innerHTML = `
+    <span style="color: #94a3b8; font-weight: 600;">AI: N/A</span>
+    <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
+  `;
+}
+
+function renderBadgeError(): void {
+  if (!badgeElement) return;
+  badgeElement.innerHTML = `
+    <span style="color: #ef4444; font-weight: 600;">AI: Error</span>
+    <span style="opacity: 0.7; margin-left: 4px; font-size: 12px;">ⓘ</span>
+  `;
+}
+
 // ──────────────────────────────────────────────────────────
-// Content Blur
+// Text highlighting
 // ──────────────────────────────────────────────────────────
 
-function applyContentBlur(analysis: PageAnalysis): void {
+function applyTextHighlights(results: DetectionItemResult[]): void {
+  clearExistingTextHighlights();
+
+  const flagged = results.filter((r) => r.tier === "medium" || r.tier === "high");
+  if (flagged.length === 0) return;
+
+  const candidateElements = Array.from(
+    document.querySelectorAll("p, li, blockquote, figcaption, article p, div"),
+  ) as HTMLElement[];
+
+  for (const result of flagged) {
+    if (!result.text) continue;
+
+    const needle = normalizeText(result.text).slice(0, 120);
+    if (!needle) continue;
+
+    for (const el of candidateElements) {
+      if ((el.dataset.aiShieldHighlighted || "") === "true") continue;
+
+      const haystack = normalizeText(el.innerText || el.textContent || "");
+      if (haystack.length < 20) continue;
+
+      if (haystack.includes(needle)) {
+        decorateTextElement(el, result);
+        break;
+      }
+    }
+  }
+}
+
+function decorateTextElement(el: HTMLElement, result: DetectionItemResult): void {
+  el.dataset.aiShieldHighlighted = "true";
+
+  const color = result.tier === "high" ? "#ef4444" : "#eab308";
+  const background =
+    result.tier === "high"
+      ? "rgba(239,68,68,0.08)"
+      : "rgba(234,179,8,0.10)";
+
+  el.style.outline = `2px solid ${color}`;
+  el.style.outlineOffset = "2px";
+  el.style.background = background;
+  el.style.borderRadius = "6px";
+  el.style.transition = "outline 0.2s ease, background 0.2s ease";
+  el.title =
+    result.explanation ||
+    `AI likelihood: ${Math.round(result.score * 100)}%`;
+}
+
+function clearExistingTextHighlights(): void {
+  const highlighted = document.querySelectorAll<HTMLElement>(
+    '[data-ai-shield-highlighted="true"]',
+  );
+
+  highlighted.forEach((el) => {
+    el.dataset.aiShieldHighlighted = "";
+    el.style.outline = "";
+    el.style.outlineOffset = "";
+    el.style.background = "";
+    el.style.borderRadius = "";
+    el.title = "";
+  });
+}
+
+// ──────────────────────────────────────────────────────────
+// Image badges
+// ──────────────────────────────────────────────────────────
+
+function applyImageBadges(results: DetectionItemResult[]): void {
+  clearExistingImageBadges();
+
+  const images = Array.from(document.querySelectorAll("img")) as HTMLImageElement[];
+  const flagged = results.filter((r) => r.tier === "medium" || r.tier === "high");
+
+  flagged.forEach((result) => {
+    const match = /^img_(\d+)$/.exec(result.id);
+    if (!match) return;
+
+    const index = Number(match[1]) - 1;
+    const img = images[index];
+    if (!img) return;
+
+    attachBadgeToImage(img, result);
+  });
+}
+
+function attachBadgeToImage(
+  img: HTMLImageElement,
+  result: DetectionItemResult,
+): void {
+  if (img.dataset.aiShieldBadged === "true") return;
+  img.dataset.aiShieldBadged = "true";
+
+  const wrapper = document.createElement("div");
+  wrapper.style.position = "relative";
+  wrapper.style.display = "inline-block";
+  wrapper.style.maxWidth = "100%";
+
+  const parent = img.parentNode;
+  if (!parent) return;
+
+  parent.insertBefore(wrapper, img);
+  wrapper.appendChild(img);
+
+  const badge = document.createElement("div");
+  const percent = Math.round(result.score * 100);
+  const bg = result.tier === "high" ? "#ef4444" : "#eab308";
+
+  badge.textContent = `${percent}% AI`;
+  badge.title =
+    result.explanation || `AI likelihood: ${percent}%`;
+
+  Object.assign(badge.style, {
+    position: "absolute",
+    top: "8px",
+    right: "8px",
+    zIndex: "10",
+    padding: "4px 8px",
+    borderRadius: "999px",
+    background: bg,
+    color: "white",
+    fontSize: "12px",
+    fontWeight: "700",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+    cursor: "help",
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  });
+
+  wrapper.appendChild(badge);
+}
+
+function clearExistingImageBadges(): void {
+  document
+    .querySelectorAll<HTMLElement>("[data-ai-shield-image-badge='true']")
+    .forEach((el) => el.remove());
+
+  document.querySelectorAll<HTMLImageElement>("img").forEach((img) => {
+    img.dataset.aiShieldBadged = "";
+  });
+}
+
+// ──────────────────────────────────────────────────────────
+// Blur behavior
+// ──────────────────────────────────────────────────────────
+
+function applyContentBlur(analysis: LocalizedPageAnalysis): void {
   const threshold = settings?.threshold ?? 70;
 
-  analysis.items
-    .filter((item) => item.type === "text" && item.score > threshold)
+  analysis.textResults
+    .filter(
+      (item) =>
+        item.score * 100 > threshold &&
+        (item.tier === "medium" || item.tier === "high"),
+    )
     .forEach((item) => {
-      // Find paragraph DOM elements that match this content
-      const paragraphs = document.querySelectorAll("p");
+      const paragraphs = document.querySelectorAll("p, li, blockquote");
       paragraphs.forEach((p) => {
         const text = (p.textContent || "").trim();
         if (
           text.length > 20 &&
-          item.preview &&
-          text.includes(item.preview.slice(0, 50))
+          item.text &&
+          normalizeText(text).includes(normalizeText(item.text).slice(0, 80))
         ) {
-          applyBlurToElement(p as HTMLElement, item.score);
+          applyBlurToElement(p as HTMLElement, item.score * 100);
         }
       });
     });
 }
 
 function applyBlurToElement(el: HTMLElement, score: number): void {
-  // Don't re-blur already-blurred elements
   if (el.dataset.aiShieldBlurred) return;
   el.dataset.aiShieldBlurred = "true";
 
   const wrapper = document.createElement("div");
   wrapper.style.position = "relative";
 
-  // Apply blur + desaturation
   el.style.filter = "blur(4px) saturate(0.85)";
   el.style.transition = "filter 0.3s ease";
 
-  // Add inline label
   const label = document.createElement("div");
   label.textContent = `Hidden: likely AI (${Math.round(score)}%) — show anyway`;
+
   Object.assign(label.style, {
     position: "absolute",
     top: "50%",
@@ -253,14 +469,12 @@ function applyBlurToElement(el: HTMLElement, score: number): void {
     whiteSpace: "nowrap",
   });
 
-  // Click to reveal
   label.addEventListener("click", () => {
     el.style.filter = "none";
     label.remove();
     el.dataset.aiShieldBlurred = "";
   });
 
-  // Wrap element
   el.parentNode?.insertBefore(wrapper, el);
   wrapper.appendChild(el);
   wrapper.appendChild(label);
@@ -277,26 +491,18 @@ function isGoogleSearchPage(): boolean {
   );
 }
 
-/**
- * Inject tiny colored dots next to Google search result titles.
- * This runs on-demand when the user has search dot display enabled.
- * For MVP: shows a neutral dot; real implementation would analyze each result.
- */
 function injectSearchDots(): void {
   if (!settings?.showSearchDots) return;
 
-  // Google search result title selectors
   const resultLinks = document.querySelectorAll("h3");
 
   resultLinks.forEach((h3) => {
-    // Skip if dot already injected
     if ((h3 as HTMLElement).dataset.aiShieldDot) return;
     (h3 as HTMLElement).dataset.aiShieldDot = "true";
 
     const dot = document.createElement("span");
     dot.title = "AI Content Shield: click badge for details";
 
-    // For MVP, show a neutral gray dot (real: would be colored per-result)
     Object.assign(dot.style, {
       display: "inline-block",
       width: "8px",
@@ -312,15 +518,21 @@ function injectSearchDots(): void {
   });
 }
 
-// ── Listen for messages from background / popup ──
+// ──────────────────────────────────────────────────────────
+// Utility
+// ──────────────────────────────────────────────────────────
+
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+// ──────────────────────────────────────────────────────────
+// Message handling
+// ──────────────────────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse) => {
     switch (message.type) {
-      case "ANALYSIS_RESULT":
-        handleAnalysisResult(message.payload as PageAnalysis);
-        sendResponse({ ok: true });
-        break;
-
       case "BLUR_CONTENT":
         if (currentAnalysis) {
           applyContentBlur(currentAnalysis);
@@ -334,52 +546,37 @@ chrome.runtime.onMessage.addListener(
         break;
 
       case "EXTRACT_CONTENT_TRIGGER":
-        // Background requesting a fresh extraction
         init().then(() => sendResponse({ ok: true }));
         return true;
 
       default:
         sendResponse({ ok: false, error: "Unknown message type" });
     }
-    return true; // keep channel open for async
+    return true;
   },
 );
 
-// ── SPA Support: Listen for URL changes ──
+// ──────────────────────────────────────────────────────────
+// SPA support
+// ──────────────────────────────────────────────────────────
+
 let lastUrl = window.location.href;
 
 setInterval(() => {
   if (window.location.href !== lastUrl) {
     lastUrl = window.location.href;
     console.log("[AI Shield] URL changed, re-initializing...");
-    // Clear old state
     if (badgeElement) badgeElement.remove();
     badgeElement = null;
     currentAnalysis = null;
-    // Re-run init with a delay
     setTimeout(init, Math.max(INIT_DELAY_MS, 1500));
   }
-}, 1000); // Check every second
+}, 1000);
 
-// ── Load settings helper ──
-function loadSettings(): Promise<ShieldSettings> {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get("settings", (result) => {
-      resolve(
-        result.settings || {
-          threshold: 70,
-          autoBlur: false,
-          elderMode: false,
-          privacyConsent: true,
-          showSearchDots: true,
-          backendUrl: "http://localhost:3001",
-        },
-      );
-    });
-  });
-}
+// ──────────────────────────────────────────────────────────
+// Start
+// ──────────────────────────────────────────────────────────
 
-// ── Start with a delay after page load ──
 if (document.readyState === "complete") {
   setTimeout(init, INIT_DELAY_MS);
 } else {
