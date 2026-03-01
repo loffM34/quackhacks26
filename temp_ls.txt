@@ -1,0 +1,7 @@
+﻿100644 blob 8190cdff293925c89252463566c5c5b965204880	model-service/model/config.json
+100644 blob 3f6d3e17034a80c2524b99212358fd2f9234bac9	model-service/model/config.json:Zone.Identifier
+100644 blob 3f6d3e17034a80c2524b99212358fd2f9234bac9	model-service/model/model.safetensors:Zone.Identifier
+100644 blob 7e0493c68135095c7ff802eb9c150e3e5cb8d41f	model-service/model/tokenizer.json
+100644 blob 3f6d3e17034a80c2524b99212358fd2f9234bac9	model-service/model/tokenizer.json:Zone.Identifier
+100644 blob 769291071a8712e4ad20cac2debfa911f5e52be5	model-service/model/tokenizer_config.json
+100644 blob 3f6d3e17034a80c2524b99212358fd2f9234bac9	model-service/model/tokenizer_config.json:Zone.Identifier

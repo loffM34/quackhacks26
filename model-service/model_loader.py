@@ -34,7 +34,18 @@ class TextDetector:
         temperature: float = DEFAULT_TEMPERATURE,
     ):
         model_path = str(model_path)
-        print(f"Loading text model from: {model_path}")
+        
+        # Check if the model weights actually exist locally
+        local_safetensors = Path(model_path) / "model.safetensors"
+        local_bin = Path(model_path) / "pytorch_model.bin"
+        
+        if not (local_safetensors.exists() and local_safetensors.stat().st_size > 0) and not (local_bin.exists() and local_bin.stat().st_size > 0):
+            print(f"Local model weights not found in {model_path}.")
+            print("Downloading compatible pre-trained model from Hugging Face Hub (openai-community/roberta-base-openai-detector)...")
+            model_path = "openai-community/roberta-base-openai-detector"
+        else:
+            print(f"Loading text model from local path: {model_path}")
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
         self.model.eval()
