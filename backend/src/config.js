@@ -18,6 +18,7 @@ export const config = {
   originalityApiKey: process.env.ORIGINALITY_API_KEY || "",
   saplingApiKey: process.env.SAPLING_API_KEY || "",
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY || "",
+  hiveApiKey: process.env.NVIDIA_API_KEY || "",
 
   // ── Python model service URL ──
   modelServiceUrl: process.env.MODEL_SERVICE_URL || "http://localhost:8000",

@@ -61,6 +61,8 @@ export interface ExtensionMessage {
     | "GET_RESULT"
     | "UPDATE_SETTINGS"
     | "BLUR_CONTENT"
+    | "CLEAR_BLUR"
+    | "RECALCULATE_BLUR"
     | "INJECT_DOTS"
     | "OPEN_SIDE_PANEL"
     | "EXTRACT_CONTENT_TRIGGER"

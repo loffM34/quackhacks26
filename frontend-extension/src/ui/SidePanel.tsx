@@ -26,15 +26,25 @@ export const SidePanel: React.FC = () => {
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
 
   useEffect(() => {
-    getCachedResult().then((result) => {
-      if (result) setAnalysis(result);
-    });
-
     loadSettings().then((s) => {
       setSettings(s);
       setThreshold(s.threshold);
       setAutoBlur(s.autoBlur);
       setElderMode(s.elderMode);
+    });
+
+    getCachedResult().then((result) => {
+      if (result && result.items?.length > 0) {
+        setAnalysis(result);
+      } else {
+        // No valid cached result (null or empty items from a stale/failed scan).
+        // Trigger a fresh scan so the panel shows real scores immediately.
+        setLoading(true);
+        requestAnalysis().then((fresh) => {
+          if (fresh) setAnalysis(fresh);
+          setLoading(false);
+        });
+      }
     });
   }, []);
 
@@ -90,13 +100,13 @@ export const SidePanel: React.FC = () => {
     setAutoBlur(next);
     updateSettings({ autoBlur: next });
 
-    if (next) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, { type: "BLUR_CONTENT" });
-        }
-      });
-    }
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+          type: next ? "BLUR_CONTENT" : "CLEAR_BLUR",
+        });
+      }
+    });
   }, [autoBlur]);
 
   const handleElderModeToggle = useCallback(() => {
@@ -214,9 +224,9 @@ export const SidePanel: React.FC = () => {
           </div>
 
           <div className="text-xs text-glass-text-muted bg-glass-800/30 p-2 rounded-lg">
-            {analysis.items.filter((i) => i.type === "text").length} text
-            blocks and {analysis.items.filter((i) => i.type === "image").length}{" "}
-            images analyzed.{" "}
+            {analysis.items.filter((i) => i.type === "text").length} text blocks
+            and {analysis.items.filter((i) => i.type === "image").length} images
+            analyzed.{" "}
             {analysis.aiDensity > 50
               ? `${analysis.aiDensity}% of analyzed blocks show moderate or strong AI signals.`
               : `Most analyzed content appears lower-risk.`}

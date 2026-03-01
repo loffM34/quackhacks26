@@ -1,4 +1,3 @@
-
 // ──────────────────────────────────────────────────────────
 // Content Script — AI Content Shield (v2 Rewrite)
 // ──────────────────────────────────────────────────────────
@@ -27,29 +26,71 @@ const MIN_WORDS = 80;
 const VIEWPORT_BUFFER = 800; // px above/below viewport
 const SCAN_DEBOUNCE_MS = 1200;
 const NAV_DEBOUNCE_MS = 800;
+const MAX_IMAGES = 5;
+const MIN_IMAGE_DIM = 100; // px — skip icons/avatars
+const IMAGE_MAX_SIDE = 512; // px — resize before sending
+const IMAGE_QUALITY = 0.7; // JPEG compression
 
 // Known social/platform domains — always use platform extractor, never fall back to generic
-const PLATFORM_DOMAINS = ["linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com", "reddit.com"];
+const PLATFORM_DOMAINS = [
+  "linkedin.com",
+  "facebook.com",
+  "instagram.com",
+  "twitter.com",
+  "x.com",
+  "reddit.com",
+];
 
 // Readable block-level tags we care about
 const READABLE_TAGS = new Set([
-  "P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3",
-  "TD", "DD", "FIGCAPTION",
+  "P",
+  "LI",
+  "BLOCKQUOTE",
+  "PRE",
+  "H1",
+  "H2",
+  "H3",
+  "TD",
+  "DD",
+  "FIGCAPTION",
 ]);
 
 // Elements to skip entirely
 const SKIP_SELECTORS = [
-  "nav", "header", "footer", "aside",
-  "script", "style", "noscript", "iframe", "svg",
-  "button", "input", "textarea", "select",
+  "nav",
+  "header",
+  "footer",
+  "aside",
+  "script",
+  "style",
+  "noscript",
+  "iframe",
+  "svg",
+  "button",
+  "input",
+  "textarea",
+  "select",
   '[aria-hidden="true"]',
-  '[role="navigation"]', '[role="banner"]', '[role="tooltip"]',
-  '[role="dialog"]', '[role="menu"]', '[role="menubar"]', '[role="toolbar"]',
-  ".cookie-banner", ".sr-only",
+  '[role="navigation"]',
+  '[role="banner"]',
+  '[role="tooltip"]',
+  '[role="dialog"]',
+  '[role="menu"]',
+  '[role="menubar"]',
+  '[role="toolbar"]',
+  ".cookie-banner",
+  ".sr-only",
   // Wikipedia boilerplate
-  ".navbox", ".infobox", ".sidebar", ".mw-editsection",
-  ".reference", ".reflist", ".refbegin",
-  "#coordinates", ".catlinks", ".mw-indicators",
+  ".navbox",
+  ".infobox",
+  ".sidebar",
+  ".mw-editsection",
+  ".reference",
+  ".reflist",
+  ".refbegin",
+  "#coordinates",
+  ".catlinks",
+  ".mw-indicators",
   // Social media chrome
   '[data-testid="socialContext"]',
   '[data-testid="placementTracking"]',
@@ -74,6 +115,9 @@ let badgeGuardInterval: ReturnType<typeof setInterval> | null = null;
 
 // Block-to-element map for blur and highlight
 const blockElements = new Map<string, Element>();
+
+// Track images already sent so we don't resend on scroll
+const scannedImageSrcs = new Set<string>();
 
 // ──────────────────────────────────────────────────────────
 // § UTILITIES
@@ -129,7 +173,6 @@ async function loadSettings(): Promise<ShieldSettings> {
     showSearchDots: true,
     backendUrl: "http://localhost:3001",
   };
-
   if (!chrome?.runtime?.id) {
     return defaults;
   }
@@ -197,16 +240,22 @@ function extractGenericBlocks(): ExtractedBlock[] {
   const results: ExtractedBlock[] = [];
 
   // Strategy: query all readable tags, filter by viewport + content quality
-  const tagSelector = Array.from(READABLE_TAGS).map((t) => t.toLowerCase()).join(",");
+  const tagSelector = Array.from(READABLE_TAGS)
+    .map((t) => t.toLowerCase())
+    .join(",");
   // Also grab role="article" containers
-  const candidates = document.querySelectorAll(`${tagSelector}, [role="article"]`);
+  const candidates = document.querySelectorAll(
+    `${tagSelector}, [role="article"]`,
+  );
 
   for (const el of candidates) {
     if (results.length >= MAX_BLOCKS) break;
     if (isSkipped(el)) continue;
     if (!isInExpandedViewport(el)) continue;
 
-    const text = cleanText((el as HTMLElement).innerText || el.textContent || "");
+    const text = cleanText(
+      (el as HTMLElement).innerText || el.textContent || "",
+    );
     if (text.length < MIN_CHARS || wordCount(text) < MIN_WORDS) continue;
 
     const fp = fingerprint(text);
@@ -220,7 +269,9 @@ function extractGenericBlocks(): ExtractedBlock[] {
 
   // If we got very few blocks from individual tags, try larger containers
   if (results.length < 3) {
-    const containers = document.querySelectorAll("article, main, [role='main'], .post, .entry-content, .article-body");
+    const containers = document.querySelectorAll(
+      "article, main, [role='main'], .post, .entry-content, .article-body",
+    );
     for (const container of containers) {
       if (results.length >= MAX_BLOCKS) break;
       if (isSkipped(container)) continue;
@@ -246,7 +297,7 @@ function extractWikipedia(): ExtractedBlock[] {
 
   // Prefer the main content area paragraphs
   const paragraphs = document.querySelectorAll(
-    "#mw-content-text .mw-parser-output > p"
+    "#mw-content-text .mw-parser-output > p",
   );
 
   for (const el of paragraphs) {
@@ -271,29 +322,61 @@ function extractWikipedia(): ExtractedBlock[] {
 function extractGoogleDocs(): ExtractedBlock[] {
   const results: ExtractedBlock[] = [];
 
-  // Try multiple Google Docs editor selectors
-  const selectors = [
-    ".kix-appview-editor",
+  // Modern Google Docs renders each paragraph as a .kix-paragraphrenderer element.
+  // innerText on the container is unreliable because text spans are absolutely
+  // positioned — but innerText on individual paragraph nodes works correctly.
+  const paragraphs = document.querySelectorAll(".kix-paragraphrenderer");
+  dbg(
+    `Google Docs: found ${paragraphs.length} .kix-paragraphrenderer elements`,
+  );
+  if (paragraphs.length > 0) {
+    const CHUNK_SIZE = 1500;
+    let buffer = "";
+    let lastEl: Element = paragraphs[paragraphs.length - 1];
+
+    const flush = (el: Element) => {
+      if (buffer.length < MIN_CHARS) return;
+      const fp = fingerprint(buffer);
+      if (scannedFingerprints.has(fp)) return;
+      scannedFingerprints.add(fp);
+      const id = `docs-${blockIdCounter++}`;
+      blockElements.set(id, el);
+      results.push({ id, text: buffer.slice(0, MAX_CHARS), element: el });
+      buffer = "";
+    };
+
+    for (const p of paragraphs) {
+      const text = cleanText(
+        (p as HTMLElement).innerText || p.textContent || "",
+      );
+      if (!text) continue;
+      lastEl = p;
+      buffer += (buffer ? " " : "") + text;
+      if (buffer.length >= CHUNK_SIZE) flush(p);
+    }
+    flush(lastEl);
+
+    if (results.length > 0) return results;
+  }
+
+  // Fallback for older / unsupported Google Docs layouts
+  const fallbackSelectors = [
     ".docs-editor-container",
     '[role="textbox"][contenteditable="true"]',
-    ".kix-page-content-wrapper",
+    ".kix-appview-editor",
   ];
-
-  for (const sel of selectors) {
+  for (const sel of fallbackSelectors) {
     const editor = document.querySelector(sel);
     if (!editor) continue;
-
     const text = cleanText((editor as HTMLElement).innerText || "");
     if (text.length < MIN_CHARS) continue;
-
     const fp = fingerprint(text);
     if (scannedFingerprints.has(fp)) continue;
     scannedFingerprints.add(fp);
-
     const id = `docs-${blockIdCounter++}`;
     blockElements.set(id, editor);
     results.push({ id, text: text.slice(0, MAX_CHARS), element: editor });
-    break; // One block for the whole doc
+    break;
   }
 
   return results;
@@ -332,7 +415,7 @@ function extractPlatformContainers(hostname: string): ExtractedBlock[] {
       if (!isInExpandedViewport(el)) continue;
 
       const text = cleanText((el as HTMLElement).innerText || "");
-      if (text.length < MIN_CHARS) continue;
+      if (text.length < 30) continue; // Lower threshold for platforms (images may carry the content)
 
       const fp = fingerprint(text);
       if (scannedFingerprints.has(fp)) continue;
@@ -349,6 +432,125 @@ function extractPlatformContainers(hostname: string): ExtractedBlock[] {
 }
 
 // ──────────────────────────────────────────────────────────
+// § IMAGE EXTRACTION
+// ──────────────────────────────────────────────────────────
+
+/**
+ * Extract visible, content-relevant images from the page.
+ * Filters out icons, decorative images, tracking pixels, and nav/header images.
+ * Compresses each to max 512px JPEG via a hidden canvas.
+ * Returns at most MAX_IMAGES base64 strings.
+ */
+async function extractImages(): Promise<string[]> {
+  const imgs = document.querySelectorAll("img");
+  const candidates: HTMLImageElement[] = [];
+
+  for (const img of imgs) {
+    if (candidates.length >= MAX_IMAGES * 2) break; // pre-filter pool
+
+    const htmlImg = img as HTMLImageElement;
+    const src = htmlImg.currentSrc || htmlImg.src || "";
+
+    // Skip empty, data-URI placeholders, SVG, and already-analyzed
+    if (
+      !src ||
+      src.startsWith("data:image/svg") ||
+      src.startsWith("data:image/gif")
+    )
+      continue;
+    if (scannedImageSrcs.has(src)) continue;
+
+    // Skip tiny images (icons, avatars, tracking pixels)
+    const nat = { w: htmlImg.naturalWidth, h: htmlImg.naturalHeight };
+    if (nat.w > 0 && nat.w < MIN_IMAGE_DIM) continue;
+    if (nat.h > 0 && nat.h < MIN_IMAGE_DIM) continue;
+
+    // Skip rendered size if available
+    const rect = htmlImg.getBoundingClientRect();
+    if (rect.width < MIN_IMAGE_DIM || rect.height < MIN_IMAGE_DIM) continue;
+
+    // Skip decorative / non-content images
+    if (htmlImg.getAttribute("role") === "presentation") continue;
+    if (htmlImg.getAttribute("aria-hidden") === "true") continue;
+    if (
+      htmlImg.closest(
+        "nav, header, footer, button, [role='navigation'], [role='banner']",
+      )
+    )
+      continue;
+
+    // Must be in expanded viewport
+    if (!isInExpandedViewport(htmlImg)) continue;
+
+    candidates.push(htmlImg);
+  }
+
+  // Sort by area descending — prefer larger content images
+  candidates.sort((a, b) => {
+    const aArea = a.naturalWidth * a.naturalHeight;
+    const bArea = b.naturalWidth * b.naturalHeight;
+    return bArea - aArea;
+  });
+
+  const results: string[] = [];
+  let imgIndex = 0;
+
+  for (const img of candidates.slice(0, MAX_IMAGES)) {
+    try {
+      const b64 = await compressImage(img);
+      if (b64) {
+        imgIndex++;
+        const src = img.currentSrc || img.src;
+        scannedImageSrcs.add(src);
+        // Register with the same ID the background will assign (img_1, img_2, ...)
+        blockElements.set(`img_${imgIndex}`, img);
+        results.push(b64);
+      }
+    } catch {
+      // Skip images that fail to draw (CORS, etc.)
+    }
+  }
+
+  dbg(
+    `Extracted ${results.length} images (from ${candidates.length} candidates).`,
+  );
+  return results;
+}
+
+/**
+ * Compress an image to a JPEG base64 string via a hidden canvas.
+ * Resizes so the longest side is at most IMAGE_MAX_SIDE px.
+ */
+function compressImage(img: HTMLImageElement): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return resolve(null);
+
+      let { naturalWidth: w, naturalHeight: h } = img;
+      if (w === 0 || h === 0) return resolve(null);
+
+      // Resize if too large
+      if (w > IMAGE_MAX_SIDE || h > IMAGE_MAX_SIDE) {
+        const scale = IMAGE_MAX_SIDE / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      canvas.width = w;
+      canvas.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const dataUrl = canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+      resolve(dataUrl);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+// ──────────────────────────────────────────────────────────
 // § ANALYSIS
 // ──────────────────────────────────────────────────────────
 
@@ -362,14 +564,15 @@ async function runScan(): Promise<void> {
   }
 
   const blocks = extractBlocks();
-  dbg(`Extracted ${blocks.length} new blocks (${scannedFingerprints.size} total fingerprints).`);
+  const images = await extractImages();
+  dbg(
+    `Extracted ${blocks.length} text blocks, ${images.length} images (${scannedFingerprints.size} fingerprints).`,
+  );
 
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && images.length === 0) {
     ensureBadge();
     if (!currentAnalysis) {
-      if (wordCount(document.body?.innerText || "") < 60) {
-        updateBadgeText("No text");
-      }
+      updateBadgeText("No content to analyze");
     }
     return;
   }
@@ -381,10 +584,14 @@ async function runScan(): Promise<void> {
 
   // ── DEBUG: log what's being sent ──
   if (DEBUG) {
-    console.groupCollapsed(`[AI Shield] Sending ${containers.length} blocks to backend`);
+    console.groupCollapsed(
+      `[AI Shield] Sending ${containers.length} blocks to backend`,
+    );
     containers.forEach((c, i) => {
       const words = c.text.split(/\s+/).filter(Boolean).length;
-      console.log(`Block ${i + 1} [${c.id}] (${words} words, ${c.text.length} chars):\n"${c.text}"`);
+      console.log(
+        `Block ${i + 1} [${c.id}] (${words} words, ${c.text.length} chars):\n"${c.text}"`,
+      );
     });
     console.groupEnd();
   }
@@ -392,9 +599,16 @@ async function runScan(): Promise<void> {
   // ── DEBUG: outline blocks being analyzed ──
   if (DEBUG_VISUAL) {
     blocks.forEach((b) => {
-      (b.element as HTMLElement).style.outline = "2px dashed rgba(99,102,241,0.6)";
+      (b.element as HTMLElement).style.outline =
+        "2px dashed rgba(99,102,241,0.6)";
       (b.element as HTMLElement).dataset.aiShieldDebug = b.id;
     });
+  }
+
+  if (DEBUG && images.length > 0) {
+    dbg(
+      `Sending ${images.length} images to backend (${images.reduce((s, i) => s + i.length, 0)} total chars).`,
+    );
   }
 
   const response = await safeSend<PageAnalysis>({
@@ -403,7 +617,7 @@ async function runScan(): Promise<void> {
       url: window.location.href,
       title: document.title,
       containers,
-      images: [],
+      images,
     },
   });
 
@@ -415,24 +629,48 @@ async function runScan(): Promise<void> {
     return;
   }
 
+  if (response.items.length === 0) {
+    dbg("No items scored — model was not called (all blocks too short).");
+    // Keep showing the previous valid analysis if we have one — don't overwrite
+    // a good score just because a subsequent scan found nothing scoreable.
+    if (!currentAnalysis) {
+      updateBadgeText("Not enough text");
+    }
+    return;
+  }
+
   currentAnalysis = response;
   updateBadgeScore(response.overallScore);
-  dbg(`Analysis: overall=${response.overallScore}%, items=${response.items.length}`);
+  dbg(
+    `Analysis: overall=${response.overallScore}%, items=${response.items.length}`,
+  );
 
   // ── DEBUG: log score breakdown + color-code blocks ──
   if (DEBUG) {
-    console.groupCollapsed(`[AI Shield] Scores (overall: ${response.overallScore}%)`);
+    console.groupCollapsed(
+      `[AI Shield] Scores (overall: ${response.overallScore}%)`,
+    );
     const rows = response.items.map((item) => {
-      const score = item.score > 1 ? item.score : Math.round(item.score * 100);
-      return { id: item.id, score: `${score}%`, tier: item.tier, preview: item.preview?.slice(0, 80) };
+      const score = Math.round(item.score);
+      return {
+        id: item.id,
+        score: `${score}%`,
+        tier: item.tier,
+        preview: item.preview?.slice(0, 80),
+      };
     });
     console.table(rows);
     console.groupEnd();
   }
   if (DEBUG_VISUAL) {
     response.items.forEach((item) => {
-      const score = item.score > 1 ? item.score : Math.round(item.score * 100);
-      const color = score <= 40 ? "rgba(34,197,94,0.6)" : score <= 70 ? "rgba(234,179,8,0.7)" : "rgba(239,68,68,0.7)";
+      const score = Math.round(item.score);
+      const color =
+        score <= 40
+          ? "rgba(34,197,94,0.6)"
+          : score <= 70
+            ? "rgba(234,179,8,0.7)"
+            : "rgba(239,68,68,0.7)";
       const el = blockElements.get(item.id) as HTMLElement | undefined;
       if (el) {
         el.style.outline = `2px solid ${color}`;
@@ -461,8 +699,7 @@ function applyCoarseBlur(analysis: PageAnalysis): void {
   let blurred = 0;
 
   for (const item of analysis.items) {
-    if (item.type !== "text") continue;
-    const score = item.score > 1 ? item.score : Math.round(item.score * 100);
+    const score = Math.round(item.score);
     if (score <= threshold) continue;
 
     const el = blockElements.get(item.id) as HTMLElement | undefined;
@@ -488,11 +725,13 @@ function applyCoarseBlur(analysis: PageAnalysis): void {
 }
 
 function clearBlur(): void {
-  document.querySelectorAll(".ai-shield-blur, .ai-shield-revealed").forEach((el) => {
-    el.classList.remove("ai-shield-blur", "ai-shield-revealed");
-    (el as HTMLElement).title = "";
-    (el as HTMLElement).style.cursor = "";
-  });
+  document
+    .querySelectorAll(".ai-shield-blur, .ai-shield-revealed")
+    .forEach((el) => {
+      el.classList.remove("ai-shield-blur", "ai-shield-revealed");
+      (el as HTMLElement).title = "";
+      (el as HTMLElement).style.cursor = "";
+    });
 }
 
 // ──────────────────────────────────────────────────────────
@@ -548,13 +787,15 @@ function ensureBadge(): void {
     zIndex: "2147483647",
     padding: "8px 14px",
     borderRadius: "24px",
-    background: "linear-gradient(135deg, rgba(10,26,74,0.85), rgba(44,79,153,0.75))",
+    background:
+      "linear-gradient(135deg, rgba(10,26,74,0.85), rgba(44,79,153,0.75))",
     backdropFilter: "blur(16px)",
     WebkitBackdropFilter: "blur(16px)",
     border: "1px solid rgba(148,163,184,0.2)",
     boxShadow: "0 4px 16px rgba(10,26,74,0.4)",
     color: "#e2e8f0",
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     fontSize: "13px",
     cursor: "pointer",
     transition: "transform 0.2s ease",
@@ -564,8 +805,12 @@ function ensureBadge(): void {
     gap: "4px",
   });
 
-  badge.addEventListener("mouseenter", () => { badge.style.transform = "scale(1.08)"; });
-  badge.addEventListener("mouseleave", () => { badge.style.transform = "scale(1)"; });
+  badge.addEventListener("mouseenter", () => {
+    badge.style.transform = "scale(1.08)";
+  });
+  badge.addEventListener("mouseleave", () => {
+    badge.style.transform = "scale(1)";
+  });
   badge.addEventListener("click", () => safeSend({ type: "OPEN_SIDE_PANEL" }));
 
   updateBadgeEl(badge, "Scanning...", "#94a3b8");
@@ -624,6 +869,11 @@ function injectStyles(): void {
   `;
   (document.head || document.documentElement).appendChild(style);
 }
+
+// ──────────────────────────────────────────────────────────
+// § SPA NAVIGATION DETECTION
+// ──────────────────────────────────────────────────────────
+
 function resetForNavigation(): void {
   dbg("Navigation detected → resetting.");
   // Clear debug outlines
@@ -637,6 +887,7 @@ function resetForNavigation(): void {
   isAnalyzing = false;
   scannedFingerprints.clear();
   blockElements.clear();
+  scannedImageSrcs.clear();
   blockIdCounter = 0;
   updateBadgeText("Scanning...");
   debouncedScan();
@@ -661,7 +912,9 @@ function hookSpaNavigation(): void {
     origPush(...args);
     handleNavigation();
   };
-  history.replaceState = function (...args: Parameters<typeof history.replaceState>) {
+  history.replaceState = function (
+    ...args: Parameters<typeof history.replaceState>
+  ) {
     origReplace(...args);
     handleNavigation();
   };
@@ -725,8 +978,14 @@ function startBadgeGuard(): void {
 
 function teardown(): void {
   dbg("Tearing down.");
-  if (contentObserver) { contentObserver.disconnect(); contentObserver = null; }
-  if (badgeGuardInterval) { clearInterval(badgeGuardInterval); badgeGuardInterval = null; }
+  if (contentObserver) {
+    contentObserver.disconnect();
+    contentObserver = null;
+  }
+  if (badgeGuardInterval) {
+    clearInterval(badgeGuardInterval);
+    badgeGuardInterval = null;
+  }
   if (scanTimer) clearTimeout(scanTimer);
   if (navTimer) clearTimeout(navTimer);
   clearBlur();
@@ -755,7 +1014,28 @@ try {
           break;
 
         case "BLUR_CONTENT":
-          if (currentAnalysis) applyCoarseBlur(currentAnalysis);
+          // Reload settings to get latest threshold, then apply
+          loadSettings().then((s) => {
+            settings = s;
+            if (currentAnalysis) applyCoarseBlur(currentAnalysis);
+          });
+          sendResponse({ ok: true });
+          break;
+
+        case "CLEAR_BLUR":
+          clearBlur();
+          sendResponse({ ok: true });
+          break;
+
+        case "RECALCULATE_BLUR":
+          // Reload settings (threshold may have changed), then reapply or clear
+          loadSettings().then((s) => {
+            settings = s;
+            clearBlur();
+            if (settings.autoBlur && currentAnalysis) {
+              applyCoarseBlur(currentAnalysis);
+            }
+          });
           sendResponse({ ok: true });
           break;
 
@@ -783,7 +1063,7 @@ try {
           sendResponse({ ok: false });
       }
       return true;
-    }
+    },
   );
 } catch {
   dbg("Failed to register message listener.");
@@ -809,8 +1089,11 @@ async function init(): Promise<void> {
   setTimeout(() => startContentObserver(), 500);
   startBadgeGuard();
 
-  // Initial scan after page settles
-  setTimeout(() => runScan(), 1000);
+  // Google Docs renders its editor well after document_idle — give it extra time.
+  // For all other pages 1s is enough; Docs needs ~4s before paragraphs appear.
+  const isGoogleDocs = location.hostname.includes("docs.google.com");
+  setTimeout(() => runScan(), isGoogleDocs ? 4000 : 1000);
+  if (isGoogleDocs) setTimeout(() => runScan(), 8000); // second attempt if still loading
 }
 
 // ── Double-init guard ──
@@ -826,7 +1109,10 @@ if (window.__AI_SHIELD_INITIALIZED__) {
 }
 window.__AI_SHIELD_INITIALIZED__ = true;
 
-if (document.readyState === "complete" || document.readyState === "interactive") {
+if (
+  document.readyState === "complete" ||
+  document.readyState === "interactive"
+) {
   init();
 } else {
   document.addEventListener("DOMContentLoaded", () => init(), { once: true });

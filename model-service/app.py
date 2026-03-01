@@ -181,21 +181,11 @@ async def startup() -> None:
     text_model_name = os.getenv("TEXT_MODEL_NAME", "").strip()
     image_model_name = os.getenv("IMAGE_MODEL_NAME", "").strip()
 
-    # TextDetector is designed to default to local ./model automatically.
-    if text_model_name:
-        print(f"Using TEXT_MODEL_NAME from env: {text_model_name}")
-        text_detector = TextDetector(model_name=text_model_name)
-    else:
-        print("TEXT_MODEL_NAME not set — using TextDetector default behavior (local ./model with HF fallback).")
-        text_detector = TextDetector()
+    # TextDetector(model_path) — defaults to ./model with HF fallback
+    text_detector = TextDetector()
 
-    # ImageDetector returns neutral 0.5 if no model_name is supplied.
-    if image_model_name:
-        print(f"Using IMAGE_MODEL_NAME from env: {image_model_name}")
-        image_detector = ImageDetector(model_name=image_model_name)
-    else:
-        print("IMAGE_MODEL_NAME not set — image detector will use neutral fallback (0.5).")
-        image_detector = ImageDetector(model_name=None)
+    # ImageDetector takes no arguments
+    image_detector = ImageDetector()
 
     use_explanations = os.getenv("ENABLE_FEATHERLESS_EXPLANATIONS", "false").lower() == "true"
     if use_explanations and FeatherlessExplainer is not None and os.getenv("FEATHERLESS_API_KEY"):
@@ -240,7 +230,7 @@ async def infer_text(req: TextRequest) -> DetectionResponse:
     if text_detector is None:
         raise HTTPException(status_code=503, detail="Text detector not loaded")
 
-    score = clamp_score(text_detector.predict(req.text))
+    score = clamp_score(text_detector.predict(req.text)["ai_prob"])
     tier = tier_from_score(score)
     explanation = maybe_explain_text(req.text, score, tier)
     latency_ms = int((time.time() - start) * 1000)
@@ -292,8 +282,7 @@ async def infer_text_spans(req: TextSpansRequest) -> DetectionResponse:
     if not req.chunks:
         raise HTTPException(status_code=400, detail="No text chunks provided")
 
-    texts = [chunk.text for chunk in req.chunks]
-    scores = [clamp_score(s) for s in text_detector.predict_batch(texts)]
+    scores = [clamp_score(text_detector.predict(chunk.text)["ai_prob"]) for chunk in req.chunks]
 
     results: List[Dict[str, Any]] = []
     for chunk, score in zip(req.chunks, scores):
@@ -374,7 +363,7 @@ async def infer_page(req: PageRequest) -> DetectionResponse:
     image_scores: List[float] = []
 
     if req.chunks:
-        chunk_scores = [clamp_score(s) for s in text_detector.predict_batch([c.text for c in req.chunks])]
+        chunk_scores = [clamp_score(text_detector.predict(c.text)["ai_prob"]) for c in req.chunks]
         text_scores.extend(chunk_scores)
 
         for chunk, score in zip(req.chunks, chunk_scores):

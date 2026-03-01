@@ -9,6 +9,7 @@ Usage:
   # result = {"ai_prob": 0.91, "human_prob": 0.09, "pred": "ai"}
 """
 
+import json
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -17,9 +18,23 @@ from pathlib import Path
 # Path to the fine-tuned model files (relative to this file)
 DEFAULT_MODEL_PATH = Path(__file__).parent / "model"
 
-# Temperature learned from calibration on validation set.
-# Re-run temperature scaling on the Colab notebook to update this if you retrain.
+# Fallback temperature if training_config.json is not found.
+# The Colab notebook saves the calibrated value automatically — prefer that.
 DEFAULT_TEMPERATURE = 1.8
+
+
+def _load_temperature(model_path: Path) -> float:
+    config_file = model_path / "training_config.json"
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                cfg = json.load(f)
+            t = float(cfg.get("temperature", DEFAULT_TEMPERATURE))
+            print(f"Temperature loaded from training_config.json: {t}")
+            return t
+        except Exception as e:
+            print(f"Could not read training_config.json ({e}), using default {DEFAULT_TEMPERATURE}")
+    return DEFAULT_TEMPERATURE
 
 
 class TextDetector:
@@ -49,8 +64,10 @@ class TextDetector:
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
         self.model.eval()
-        self.temperature = temperature
-        print("Text model loaded.")
+        # Use calibrated temperature from training_config.json if available,
+        # otherwise fall back to the constructor argument.
+        self.temperature = _load_temperature(Path(model_path)) if temperature == DEFAULT_TEMPERATURE else temperature
+        print(f"Text model loaded. Temperature: {self.temperature}")
 
     @torch.no_grad()
     def predict(self, text: str, threshold: float = 0.85) -> dict:
@@ -68,7 +85,7 @@ class TextDetector:
             text,
             return_tensors="pt",
             truncation=True,
-            max_length=256,
+            max_length=512,
             padding=True,
         )
 
@@ -85,6 +102,14 @@ class TextDetector:
 
         return {"ai_prob": ai_prob, "human_prob": human_prob, "pred": pred}
 
+    def predict_batch(self, texts: list[str], threshold: float = 0.85) -> list[float]:
+        """
+        Predict AI probability for a batch of texts.
+
+        Returns:
+            List of ai_prob scores (one per text).
+        """
+        return [self.predict(text, threshold)["ai_prob"] for text in texts]
 
 class ImageDetector:
     """
@@ -92,5 +117,9 @@ class ImageDetector:
     Not currently supported — returns a neutral score.
     """
 
+    def __init__(self, model_name=None):
+        self.model_name = model_name
+
     def predict(self, image_data: str) -> float:
         return 0.5
+
