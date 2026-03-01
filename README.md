@@ -1,4 +1,4 @@
-# Flare
+# 🔥 Flare 🔥
 
 Michael Dox, Michael Loff, Sarah Simbulan, Leonard Weber
 
