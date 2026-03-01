@@ -528,14 +528,6 @@ function applyContentBlur(analysis: LocalizedPageAnalysis): void {
 
   // Rebuild text map before blurring
   mapTextNodes();
-
- analysis.textResults
-  .filter((item: DetectionItemResult) => item.score > threshold)
-  .forEach((item) => {
-    if (item.preview) {
-      blurText(item.preview);
-    }
-  });
 }
 
 function highlightContentOnPage(preview: string): void {
